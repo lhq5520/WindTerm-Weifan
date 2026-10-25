@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "windterm-weifan",
+  "version-string": "0.1.0",
+  "description": "Dependencies for Windows builds (Qt comes from the Qt installer / install-qt-action).",
+  "dependencies": [
+    "libssh2",
+    "openssl"
+  ]
+}

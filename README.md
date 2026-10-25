@@ -5,6 +5,18 @@ _Hello WindTerm :rose:, hello world!_
 
 **We're just beginning! If you want a high performance text editor, you can try [WindEdit](https://www.github.com/kingToolbox/WindEdit/).**
 
+> **WindTerm-Weifan fork:** this branch adds a buildable, cross-platform terminal and SSH/SFTP
+> client (CMake + Qt 6, native on Apple Silicon, Linux and Windows) next to the partial upstream
+> sources, which remain untouched in `src/`. Features: tabs and split panes, xterm-compatible
+> emulation (truecolor, kitty keyboard, hyperlinks), scrollback search, themes, configurable
+> shortcuts, saved sessions, SSH via libssh2 (known_hosts, agent/key/password auth, jump hosts,
+> SOCKS5/HTTP proxies, automatic reconnect), an SFTP browser and an Argon2id/ChaCha20-Poly1305
+> credential vault.
+> Quick start: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev`.
+> See [docs/USER_GUIDE.md](docs/USER_GUIDE.md), [docs/BUILDING.md](docs/BUILDING.md),
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/SECURITY.md](docs/SECURITY.md),
+> [docs/PACKAGING.md](docs/PACKAGING.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
 # License
 **Completely FREE for commercial and non-commercial use without limitations.**
 **All released source codes (except thirdparty directory) are provided under the terms of Apache-2.0 license.**

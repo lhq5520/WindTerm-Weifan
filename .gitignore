@@ -1,0 +1,14 @@
+# Build trees
+/build/
+/build-*/
+/out/
+/dist/
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+
+# IDE
+.vscode/
+.idea/
+*.user
+.DS_Store

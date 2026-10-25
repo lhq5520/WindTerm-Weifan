@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hardened runtime entitlements. A terminal spawns arbitrary user programs, which the hardened
+     runtime allows; Qt plugins are re-signed with the app's identity, so library validation can
+     stay enabled. The app is not sandboxed (a sandboxed terminal could not run the user's shell). -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

@@ -1,0 +1,14 @@
+{
+  "cipher": "chacha20-poly1305",
+  "ciphertext": "Pw85oUpSF6stWGA4t+z5Zw3e7EhK4HVdjZTPrfhvkbEK3XufEZhSQtyedGIef8kmckJFLrSCu6CAy+2Kh8Czj+oOJx/S8gTX9173HOkqHgm4/emYln1/BaYDghsUhd6gKFSZp0Oe0dA5CQ16PfQHhKsDuAQyMZuDs/d+rNAl633FWCxqVtFOzgTQg6usT0Ji0bsXgw3Qztfz4+PQpp6UTSPRG+EvJpQZkvMr5YeqORBDAHStJu0VSFCa6CMZsSGPdeHl1qitu4Q2XrnRBXBFaYab7iEsbLM=",
+  "format": "windterm-weifan-vault",
+  "kdf": {
+    "algorithm": "argon2id",
+    "iterations": 2,
+    "memoryKiB": 1024,
+    "parallelism": 1,
+    "salt": "zcsPrqtwA6XdaevqAF9X1A=="
+  },
+  "nonce": "479to2nqHJem4vDs",
+  "version": 1
+}

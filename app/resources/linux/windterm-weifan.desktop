@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=WindTerm-Weifan
+GenericName=Terminal
+Comment=Terminal emulator and SSH/SFTP client
+Exec=WindTerm-Weifan
+Icon=windterm-weifan
+Terminal=false
+Categories=System;TerminalEmulator;Network;
+Keywords=terminal;shell;ssh;sftp;console;
+StartupWMClass=WindTerm-Weifan

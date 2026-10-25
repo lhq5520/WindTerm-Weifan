@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [master, "feat/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: "6.8.*"
+
+jobs:
+  linux:
+    name: Linux (GCC)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        # OpenSSL on 24.04 is 3.0 (no Argon2id), so the vault uses libsodium there.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssh2-1-dev libsodium-dev openssh-server openssh-client \
+            libxkbcommon-dev libgl1-mesa-dev
+      - name: Install Qt # Ubuntu 24.04 ships Qt 6.4, below the 6.5 minimum
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Configure
+        run: cmake --preset dev -DWT_WARNINGS_AS_ERRORS=ON -DWT_ENABLE_SSH=ON -DWT_ENABLE_VAULT=ON
+      - name: Build
+        run: cmake --build --preset dev
+      - name: Test
+        run: ctest --preset dev
+
+  linux-sanitizers:
+    name: Linux ASan/UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssh2-1-dev libsodium-dev openssh-server openssh-client \
+            libxkbcommon-dev libgl1-mesa-dev
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Build
+        run: |
+          cmake --preset asan -DWT_ENABLE_SSH=ON -DWT_ENABLE_VAULT=ON
+          cmake --build --preset asan
+      - name: Test libraries (with leak checks)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --preset asan -LE gui
+      - name: Test GUI (Qt's own allocations are not leak-checked)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=0
+        run: ctest --preset asan -L gui
+
+  windows-cross:
+    name: Windows cross-compile check (mingw-w64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y ninja-build mingw-w64
+      - name: Build libraries and tests for Windows
+        run: |
+          cmake --preset windows-mingw-cross
+          cmake --build --preset windows-mingw-cross
+
+  macos-arm64:
+    name: macOS Apple Silicon
+    runs-on: macos-14 # arm64 runner
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install ninja qt libssh2 openssl@3
+      - name: Configure
+        run: >
+          cmake --preset macos-arm64 -DWT_WARNINGS_AS_ERRORS=ON -DWT_ENABLE_SSH=ON -DWT_ENABLE_VAULT=ON
+          -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix openssl@3);$(brew --prefix libssh2)"
+      - name: Build
+        run: cmake --build --preset macos-arm64
+      - name: Test
+        run: ctest --preset macos-arm64
+      - name: Verify architecture
+        run: lipo -info build/macos-arm64/app/WindTerm-Weifan.app/Contents/MacOS/WindTerm-Weifan | grep arm64
+      - name: Package (unsigned unless signing secrets are configured)
+        env:
+          WT_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          WT_NOTARY_PROFILE: ${{ secrets.MACOS_NOTARY_PROFILE }}
+        run: tools/package/package-macos.sh --skip-tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/*.dmg
+
+  windows:
+    name: Windows x64 (MSVC + vcpkg)
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: C:\vcpkg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Configure (vcpkg installs libssh2 and OpenSSL from vcpkg.json)
+        run: cmake --preset windows-msvc -DWT_WARNINGS_AS_ERRORS=ON -DWT_ENABLE_SSH=ON -DWT_ENABLE_VAULT=ON
+      - name: Build
+        run: cmake --build --preset windows-msvc
+      - name: Test
+        run: ctest --preset windows-msvc
+      - name: Package
+        shell: pwsh
+        run: tools/package/package-windows.ps1 -SkipTests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/*.zip
+
+  linux-package:
+    name: Linux packages (tar.gz, deb, AppImage)
+    runs-on: ubuntu-24.04
+    needs: linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssh2-1-dev libsodium-dev libxkbcommon-dev libgl1-mesa-dev \
+            libfuse2 file
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          cache: true
+      - name: Package
+        run: tools/package/package-linux.sh --appimage --skip-tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.AppImage
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-package, macos-arm64, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: true
