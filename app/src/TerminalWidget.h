@@ -10,6 +10,7 @@
 #include "wt/terminal/MouseEncoder.h"
 #include "wt/terminal/Search.h"
 #include "wt/terminal/Selection.h"
+#include "wt/terminal/Terminal.h"
 
 #include <QAbstractScrollArea>
 #include <QColor>
@@ -22,6 +23,7 @@
 #include <QUrl>
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -183,7 +185,11 @@ private:
     void drawDecorations(QPainter& painter, const wt::terminal::CellAttributes& attr, const QRect& rect,
                          const QColor& foreground) const;
     void drawCursor(QPainter& painter) const;
-    void drawImages(QPainter& painter, std::int64_t top, int firstRow, int lastRow) const;
+    // Sixel and kitty images with a negative (belowText) or non-negative z-index.
+    void drawImages(QPainter& painter, const std::vector<const wt::terminal::Terminal::Image*>& images,
+                    std::int64_t top, int firstRow, int lastRow, bool belowText) const;
+    void pruneImageCache(const std::vector<const wt::terminal::Terminal::Image*>& images) const;
+    const QImage& cachedImage(const std::shared_ptr<const wt::terminal::Bitmap>& bitmap) const;
     std::vector<RowHighlight> searchHighlightsForRow(std::int64_t absoluteRow) const;
 
     // User input (keys, IME, paste): command tracking, completion, then the session.
@@ -241,7 +247,12 @@ private:
     std::vector<wt::terminal::SearchMatch> m_searchMatches;
     int m_currentMatch = -1;
     std::vector<CompiledTrigger> m_highlightRules;
-    mutable QHash<quint64, QImage> m_imageCache; // sixel images converted for painting
+    // Bitmaps of the images on the screen, converted for painting.
+    struct CachedImage {
+        std::weak_ptr<const wt::terminal::Bitmap> source;
+        QImage image;
+    };
+    mutable QHash<const void*, CachedImage> m_imageCache;
 
     // Command line tracking and completion
     wt::session::InputLineTracker m_inputLine;

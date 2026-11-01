@@ -74,6 +74,7 @@ void VtParser::reset() {
     clearSequence();
     m_osc.clear();
     m_dcs.clear();
+    m_apc.clear();
 }
 
 void VtParser::clearSequence() {
@@ -96,6 +97,8 @@ void VtParser::enterEscape() {
         finishOsc(false); // ESC begins the ST terminator (ESC \)
     } else if (m_state == State::DcsPassthrough) {
         finishDcs();
+    } else if (m_state == State::ApcString) {
+        finishApc();
     }
     m_state = State::Escape;
     clearSequence();
@@ -120,6 +123,14 @@ void VtParser::finishDcs() {
     }
     m_dcs.clear();
     m_dcsOverflow = false;
+}
+
+void VtParser::finishApc() {
+    if (!m_apcOverflow) {
+        m_handler.apcDispatch(m_apc);
+    }
+    m_apc.clear();
+    m_apcOverflow = false;
 }
 
 bool VtParser::collectParam(char32_t cp, State paramState, State intermediateState, State ignoreState) {
@@ -154,6 +165,8 @@ void VtParser::advance(char32_t cp) {
     if (cp == 0x18 || cp == 0x1A) { // CAN, SUB abort the current sequence
         m_osc.clear();
         m_dcs.clear();
+        m_apc.clear();
+        m_apcOverflow = false;
         m_state = State::Ground;
         m_handler.execute(static_cast<std::uint8_t>(cp));
         return;
@@ -163,6 +176,8 @@ void VtParser::advance(char32_t cp) {
             finishOsc(false);
         } else if (m_state == State::DcsPassthrough) {
             finishDcs();
+        } else if (m_state == State::ApcString) {
+            finishApc();
         }
         m_state = State::Ground;
         return;
@@ -195,7 +210,11 @@ void VtParser::advance(char32_t cp) {
             m_dcs.clear();
             m_dcsOverflow = false;
             m_state = State::DcsEntry;
-        } else if (cp == 'X' || cp == '^' || cp == '_') {
+        } else if (cp == '_') {
+            m_apc.clear();
+            m_apcOverflow = false;
+            m_state = State::ApcString;
+        } else if (cp == 'X' || cp == '^') {
             m_state = State::IgnoredString;
         } else if (cp >= 0x30 && cp <= 0x7E) {
             m_handler.escDispatch({}, static_cast<char>(cp));
@@ -304,6 +323,17 @@ void VtParser::advance(char32_t cp) {
             core::appendUtf8(m_dcs, cp);
         } else {
             m_dcsOverflow = true;
+        }
+        return;
+
+    case State::ApcString:
+        if (c0 || cp == 0x7F) {
+            return;
+        }
+        if (m_apc.size() < kMaxApcLength) {
+            core::appendUtf8(m_apc, cp);
+        } else {
+            m_apcOverflow = true;
         }
         return;
 

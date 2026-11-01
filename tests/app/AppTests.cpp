@@ -5,8 +5,10 @@
 #include "TerminalWidget.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QClipboard>
 #include <QElapsedTimer>
+#include <QImage>
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -301,6 +303,32 @@ private Q_SLOTS:
         QCOMPARE(session.terminal().imageCount(), std::size_t(0));
         image = widget.viewport()->grab().toImage();
         QVERIFY(image.pixelColor(probe) != QColor(0xFF, 0, 0));
+        session.terminate();
+    }
+
+    void kittyPngImageIsPainted() {
+        // A blue PNG sent with the kitty graphics protocol, scaled to 4 x 2 cells.
+        QImage png(16, 16, QImage::Format_ARGB32);
+        png.fill(QColor(0, 0, 255));
+        QByteArray encoded;
+        QBuffer buffer(&encoded);
+        QVERIFY(buffer.open(QIODevice::WriteOnly) && png.save(&buffer, "PNG"));
+        TerminalSession session;
+        TerminalWidget widget;
+        QVERIFY(session.start(shellOptions(
+            QStringLiteral("printf '\\033_Ga=T,f=100,c=4,r=2,q=2;%s\\033\\\\ok' '%1'; sleep 5")
+                .arg(QString::fromLatin1(encoded.toBase64())))));
+        widget.setSession(&session);
+        widget.resize(widget.sizeForGrid(10, 40));
+        widget.show();
+        QTRY_VERIFY_WITH_TIMEOUT(screenContains(session, "ok"), 5000);
+        QCOMPARE(session.terminal().imageCount(), std::size_t(1));
+        const auto* placed = session.terminal().visibleImages().front();
+        QCOMPARE(placed->columns, 4);
+        QCOMPARE(placed->rows, 2);
+        const QImage image = widget.viewport()->grab().toImage();
+        const QPoint probe = cellCenter(widget, 1, 2) * image.devicePixelRatio();
+        QCOMPARE(image.pixelColor(probe), QColor(0, 0, 255));
         session.terminate();
     }
 

@@ -2,10 +2,37 @@
 
 #include "PtyBackend.h"
 
+#include <QImage>
+
 #include <algorithm>
+#include <cstring>
+
+namespace {
+
+// PNG images of the kitty graphics protocol, decoded with Qt (the terminal model has no image
+// libraries). The model checked the size in the header already.
+std::optional<wt::terminal::Bitmap> decodePng(std::string_view data) {
+    QImage image;
+    if (!image.loadFromData(reinterpret_cast<const uchar*>(data.data()), static_cast<int>(data.size()), "PNG")) {
+        return std::nullopt;
+    }
+    image = image.convertToFormat(QImage::Format_ARGB32);
+    wt::terminal::Bitmap bitmap;
+    bitmap.width = image.width();
+    bitmap.height = image.height();
+    bitmap.pixels.resize(static_cast<std::size_t>(bitmap.width) * static_cast<std::size_t>(bitmap.height));
+    for (int y = 0; y < bitmap.height; ++y) {
+        std::memcpy(bitmap.pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(bitmap.width),
+                    image.constScanLine(y), static_cast<std::size_t>(bitmap.width) * 4);
+    }
+    return bitmap;
+}
+
+} // namespace
 
 TerminalSession::TerminalSession(QObject* parent) : QObject(parent), m_terminal(24, 80) {
     m_terminal.setResponseHandler([this](std::string_view bytes) { sendBytes(bytes); });
+    m_terminal.setPngDecoder(&decodePng);
     m_terminal.setTitleHandler(
         [this](const std::string& title) { Q_EMIT titleChanged(QString::fromStdString(title)); });
     m_terminal.setBellHandler([this] { Q_EMIT bell(); });

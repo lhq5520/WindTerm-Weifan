@@ -567,6 +567,9 @@ void TerminalWidget::paintEvent(QPaintEvent* event) {
     const std::int64_t top = viewportTopRow();
     const int firstRow = std::max(0, event->rect().top() / m_cellHeight);
     const int lastRow = std::min(term.rows() - 1, event->rect().bottom() / m_cellHeight);
+    const auto images = term.visibleImages();
+    pruneImageCache(images);
+    drawImages(painter, images, top, firstRow, lastRow, true); // negative z-index: under the text
     for (int row = firstRow; row <= lastRow; ++row) {
         const Line* line = term.absoluteLine(top + row);
         if (!line) {
@@ -587,7 +590,7 @@ void TerminalWidget::paintEvent(QPaintEvent* event) {
         drawLine(painter, *line, 0, top + row, selection, highlights);
         painter.restore();
     }
-    drawImages(painter, top, firstRow, lastRow);
+    drawImages(painter, images, top, firstRow, lastRow, false);
     drawCursor(painter);
     if (m_flashTimer.isActive()) {
         QColor flash = fromRgb(palette.foreground);
@@ -596,33 +599,45 @@ void TerminalWidget::paintEvent(QPaintEvent* event) {
     }
 }
 
-void TerminalWidget::drawImages(QPainter& painter, std::int64_t top, int firstRow, int lastRow) const {
-    const auto images = m_session->terminal().visibleImages();
-    // Forget images the terminal dropped.
+void TerminalWidget::pruneImageCache(const std::vector<const Terminal::Image*>& images) const {
+    // Keep the converted images of the bitmaps that are still shown.
     for (auto it = m_imageCache.begin(); it != m_imageCache.end();) {
-        const bool alive = std::any_of(images.begin(), images.end(), [&](const auto* image) { return image->id == it.key(); });
-        it = alive ? std::next(it) : m_imageCache.erase(it);
+        const bool shown = std::any_of(images.begin(), images.end(),
+                                       [&](const Terminal::Image* image) { return image->bitmap.get() == it.key(); });
+        it = shown && !it->source.expired() ? std::next(it) : m_imageCache.erase(it);
     }
+}
+
+const QImage& TerminalWidget::cachedImage(const std::shared_ptr<const Bitmap>& bitmap) const {
+    auto it = m_imageCache.find(bitmap.get());
+    if (it == m_imageCache.end() || it->source.lock() != bitmap) { // (a new bitmap at a freed address)
+        const QImage view(reinterpret_cast<const uchar*>(bitmap->pixels.data()), bitmap->width, bitmap->height,
+                          bitmap->width * 4, QImage::Format_ARGB32);
+        // A converted (deep) copy: premultiplied is what QPainter blends fastest.
+        it = m_imageCache.insert(bitmap.get(), {bitmap, view.convertToFormat(QImage::Format_ARGB32_Premultiplied)});
+    }
+    return it->image;
+}
+
+void TerminalWidget::drawImages(QPainter& painter, const std::vector<const Terminal::Image*>& images, std::int64_t top,
+                                int firstRow, int lastRow, bool belowText) const {
     for (const Terminal::Image* image : images) {
         const std::int64_t first = image->row - top; // viewport row of the top edge
-        if (first + image->rows <= firstRow || first > lastRow) {
+        if ((image->z < 0) != belowText || first + image->rows <= firstRow || first > lastRow) {
             continue;
         }
-        auto cached = m_imageCache.find(image->id);
-        if (cached == m_imageCache.end()) {
-            const Bitmap& bitmap = *image->bitmap;
-            const QImage view(reinterpret_cast<const uchar*>(bitmap.pixels.data()), bitmap.width, bitmap.height,
-                              bitmap.width * 4, QImage::Format_ARGB32);
-            // A converted (deep) copy: premultiplied is what QPainter blends fastest.
-            cached = m_imageCache.insert(image->id, view.convertToFormat(QImage::Format_ARGB32_Premultiplied));
-        }
-        // Scale with the font (the image was laid out for the cell size at that time).
+        // Scale with the font: the image was laid out for the cell size at that time.
         const double sx = static_cast<double>(m_cellWidth) / image->cellWidth;
         const double sy = static_cast<double>(m_cellHeight) / image->cellHeight;
-        const QRectF target(image->column * m_cellWidth, static_cast<double>(first * m_cellHeight),
-                            image->bitmap->width * sx, image->bitmap->height * sy);
-        painter.drawImage(target, *cached);
+        const QRectF target(image->column * m_cellWidth + image->offsetX * sx,
+                            static_cast<double>(first * m_cellHeight) + image->offsetY * sy, image->pixelWidth * sx,
+                            image->pixelHeight * sy);
+        const QRectF source(image->sourceX, image->sourceY, image->sourceWidth, image->sourceHeight);
+        const bool scaled = target.width() != source.width() || target.height() != source.height();
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, scaled);
+        painter.drawImage(target, cachedImage(image->bitmap), source);
     }
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
 }
 
 void TerminalWidget::drawLine(QPainter& painter, const Line& line, int y, std::int64_t absoluteRow,

@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cstdio>
 #include <string>
+#include <utility>
 
 namespace wt::terminal {
 namespace {
@@ -214,6 +215,7 @@ void Terminal::reset() {
     clearSelection();
     m_shellMarks = {};
     m_images.clear();
+    resetKittyGraphics();
     m_attributes = {};
     m_primary.assign(static_cast<std::size_t>(m_rows), blankLine());
     m_alternate.assign(static_cast<std::size_t>(m_rows), blankLine());
@@ -1132,6 +1134,8 @@ std::vector<const Terminal::Image*> Terminal::visibleImages() const {
             images.push_back(&image);
         }
     }
+    // Lower z-indices first; equal ones in the order they were placed.
+    std::stable_sort(images.begin(), images.end(), [](const Image* a, const Image* b) { return a->z < b->z; });
     return images;
 }
 
@@ -1149,6 +1153,8 @@ void Terminal::placeSixel(const CsiParams& params, std::string_view data) {
     image.id = m_nextImageId++;
     image.columns = std::min(m_columns, (bitmap->width + cellWidth - 1) / cellWidth);
     image.rows = (bitmap->height + cellHeight - 1) / cellHeight;
+    image.sourceWidth = image.pixelWidth = bitmap->width;
+    image.sourceHeight = image.pixelHeight = bitmap->height;
     image.bitmap = std::make_shared<const Bitmap>(std::move(*bitmap));
     image.cellWidth = cellWidth;
     image.cellHeight = cellHeight;
@@ -1224,6 +1230,353 @@ void Terminal::graphicsAttributes(const CsiParams& params) {
     } else {
         respond("\x1b[?" + std::to_string(item) + ";1S"); // unknown item
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Kitty graphics protocol
+
+namespace {
+
+constexpr std::size_t kMaxKittyData = 64u * 1024 * 1024; // decoded bytes of one transmission
+constexpr std::size_t kKittyQuota = 256u * 1024 * 1024;  // stored image data (ARGB)
+constexpr std::size_t kMaxKittyImages = 1024;
+constexpr int kMaxKittyCells = 1000; // columns / rows of one placement
+
+bool appendBase64(std::string& out, std::string_view chunk) {
+    auto decoded = core::base64Decode(chunk);
+    if (!decoded || out.size() + decoded->size() > kMaxKittyData) {
+        return false;
+    }
+    out += *decoded;
+    return true;
+}
+
+int ceilDiv(std::int64_t value, int divisor) {
+    return static_cast<int>((value + divisor - 1) / divisor);
+}
+
+} // namespace
+
+void Terminal::apcDispatch(std::string_view data) {
+    if (!data.empty() && data.front() == 'G') {
+        kittyGraphics(data.substr(1));
+    }
+}
+
+void Terminal::resetKittyGraphics() {
+    m_kittyImages.clear();
+    m_kittyPending.reset();
+    m_kittyData.clear();
+    m_kittyDataBad = false;
+}
+
+void Terminal::kittyGraphics(std::string_view data) {
+    auto command = parseKittyCommand(data);
+    if (!command) {
+        return;
+    }
+    if (m_kittyPending) {
+        // A continuation chunk: only its data, m and q count.
+        if (!m_kittyDataBad && !appendBase64(m_kittyData, command->payload)) {
+            m_kittyDataBad = true;
+            m_kittyData.clear();
+        }
+        if (command->quiet) {
+            m_kittyPending->quiet = command->quiet;
+        }
+        if (command->more) {
+            return;
+        }
+        KittyCommand first = std::move(*m_kittyPending);
+        m_kittyPending.reset();
+        std::string collected = std::move(m_kittyData);
+        m_kittyData.clear();
+        if (std::exchange(m_kittyDataBad, false)) {
+            kittyRespond(first, first.id, "EINVAL:invalid or too much data");
+            return;
+        }
+        kittyExecute(first, std::move(collected));
+        return;
+    }
+    std::string decoded;
+    const bool transmits = command->action == 't' || command->action == 'T' || command->action == 'q';
+    const bool good = !transmits || appendBase64(decoded, command->payload);
+    if (transmits && command->more) {
+        m_kittyPending = std::move(*command);
+        m_kittyPending->payload.clear();
+        m_kittyData = std::move(decoded);
+        m_kittyDataBad = !good;
+        return;
+    }
+    if (!good) {
+        kittyRespond(*command, command->id, "EINVAL:invalid or too much data");
+        return;
+    }
+    kittyExecute(*command, std::move(decoded));
+}
+
+void Terminal::kittyExecute(const KittyCommand& command, std::string data) {
+    switch (command.action) {
+    case 't':
+    case 'T':
+    case 'q': {
+        if (command.medium != 'd') {
+            // Files and shared memory would let a remote program show local files.
+            kittyRespond(command, command.id, "EINVAL:only direct transmission (t=d) is supported");
+            return;
+        }
+        auto decoded = decodeKittyImage(command, std::move(data), m_kittyDecoders);
+        if (!decoded.bitmap) {
+            kittyRespond(command, command.id, decoded.error);
+            return;
+        }
+        if (command.action == 'q') {
+            kittyRespond(command, command.id, ""); // supported; nothing is stored
+            return;
+        }
+        std::uint32_t id = command.id;
+        if (id == 0) {
+            do {
+                id = m_nextKittyId++;
+                if (m_nextKittyId == 0) {
+                    m_nextKittyId = 0x80000000u;
+                }
+            } while (m_kittyImages.count(id) != 0);
+        }
+        // New data for an id replaces the image and its placements.
+        m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
+                                      [id](const Image& image) { return image.kittyImage == id; }),
+                       m_images.end());
+        m_kittyImages[id] = {command.number, std::make_shared<const Bitmap>(std::move(*decoded.bitmap)), ++m_kittySerial,
+                             command.id == 0 && command.number == 0};
+        kittyEnforceQuota();
+        std::string error;
+        if (command.action == 'T' && m_kittyImages.count(id) != 0) {
+            error = kittyPut(command, id);
+        }
+        kittyRespond(command, id, error);
+        markFullDamage();
+        return;
+    }
+    case 'p': {
+        std::uint32_t id = command.id;
+        if (id == 0 && command.number != 0) {
+            id = kittyNewestWithNumber(command.number);
+        }
+        if (id == 0 && command.number == 0) {
+            return; // nothing to address, nobody to tell
+        }
+        if (m_kittyImages.count(id) == 0) {
+            kittyRespond(command, id, "ENOENT:no such image");
+            return;
+        }
+        kittyRespond(command, id, kittyPut(command, id));
+        return;
+    }
+    case 'd': kittyDelete(command); return;
+    case 'f':
+    case 'a':
+    case 'c': kittyRespond(command, command.id, "EINVAL:animation is not supported"); return;
+    default: kittyRespond(command, command.id, "EINVAL:unknown action"); return;
+    }
+}
+
+std::string Terminal::kittyPut(const KittyCommand& command, std::uint32_t imageId) {
+    if (command.unicodePlaceholder) {
+        return "EINVAL:Unicode placeholders are not supported";
+    }
+    const KittyImage& stored = m_kittyImages.at(imageId);
+    const Bitmap& bitmap = *stored.bitmap;
+    const int cellWidth = m_cellPixelWidth > 0 ? m_cellPixelWidth : 10;
+    const int cellHeight = m_cellPixelHeight > 0 ? m_cellPixelHeight : 20;
+
+    Image image;
+    image.sourceX = std::min(command.x, bitmap.width);
+    image.sourceY = std::min(command.y, bitmap.height);
+    image.sourceWidth = command.w > 0 ? std::min(command.w, bitmap.width - image.sourceX) : bitmap.width - image.sourceX;
+    image.sourceHeight =
+        command.h > 0 ? std::min(command.h, bitmap.height - image.sourceY) : bitmap.height - image.sourceY;
+    if (image.sourceWidth <= 0 || image.sourceHeight <= 0) {
+        return "EINVAL:empty source rectangle";
+    }
+    image.offsetX = std::min(command.offsetX, cellWidth - 1);
+    image.offsetY = std::min(command.offsetY, cellHeight - 1);
+    const int columns = std::min(command.columns, kMaxKittyCells);
+    const int rows = std::min(command.rows, kMaxKittyCells);
+    const std::int64_t sw = image.sourceWidth;
+    const std::int64_t sh = image.sourceHeight;
+    if (columns > 0 && rows > 0) { // scaled to fill the cells
+        image.columns = columns;
+        image.rows = rows;
+        image.pixelWidth = columns * cellWidth - image.offsetX;
+        image.pixelHeight = rows * cellHeight - image.offsetY;
+    } else if (columns > 0) { // the other side keeps the aspect ratio
+        image.columns = columns;
+        image.pixelWidth = columns * cellWidth - image.offsetX;
+        image.pixelHeight = static_cast<int>(std::max<std::int64_t>(1, sh * image.pixelWidth / sw));
+        image.rows = std::min(kMaxKittyCells, ceilDiv(image.pixelHeight + image.offsetY, cellHeight));
+    } else if (rows > 0) {
+        image.rows = rows;
+        image.pixelHeight = rows * cellHeight - image.offsetY;
+        image.pixelWidth = static_cast<int>(std::max<std::int64_t>(1, sw * image.pixelHeight / sh));
+        image.columns = std::min(kMaxKittyCells, ceilDiv(image.pixelWidth + image.offsetX, cellWidth));
+    } else {
+        image.pixelWidth = image.sourceWidth;
+        image.pixelHeight = image.sourceHeight;
+        image.columns = std::min(kMaxKittyCells, ceilDiv(sw + image.offsetX, cellWidth));
+        image.rows = std::min(kMaxKittyCells, ceilDiv(sh + image.offsetY, cellHeight));
+    }
+    if (command.placement != 0) { // the same placement id moves the placement
+        m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
+                                      [&](const Image& placed) {
+                                          return placed.kittyImage == imageId &&
+                                                 placed.kittyPlacement == command.placement;
+                                      }),
+                       m_images.end());
+    }
+    image.id = m_nextImageId++;
+    image.bitmap = stored.bitmap;
+    image.row = screenStart() + m_cursor.row;
+    image.column = m_cursor.column;
+    image.cellWidth = cellWidth;
+    image.cellHeight = cellHeight;
+    image.alternate = isAlternateScreen();
+    image.kittyImage = imageId;
+    image.kittyPlacement = command.placement;
+    image.z = command.z;
+    const int placedRows = image.rows;
+    const int placedColumns = image.columns;
+    m_images.push_back(std::move(image));
+    if (!command.keepCursor) {
+        // The cursor goes to the image's last row, after its last column.
+        m_pendingWrap = false;
+        for (int i = 1; i < placedRows; ++i) {
+            lineFeed();
+        }
+        const int column = m_cursor.column + placedColumns;
+        if (column >= m_columns) {
+            m_cursor.column = 0;
+            lineFeed();
+        } else {
+            m_cursor.column = column;
+        }
+    }
+    pruneImages();
+    markFullDamage();
+    return {};
+}
+
+void Terminal::kittyDelete(const KittyCommand& command) {
+    const char what = command.deleteWhat;
+    const bool freeData = what >= 'A' && what <= 'Z';
+    const char kind = static_cast<char>(freeData ? what - 'A' + 'a' : what);
+    const bool alternate = isAlternateScreen();
+    const std::int64_t top = screenStart();
+    const std::int64_t cellRow = top + command.y - 1; // d=p/q/y: 1-based screen coordinates
+    const int cellColumn = command.x - 1;
+    const std::uint32_t id = kind == 'n' ? kittyNewestWithNumber(command.number) : command.id;
+    auto covers = [](const Image& image, std::int64_t row, int column) {
+        return row >= image.row && row < image.row + image.rows && column >= image.column &&
+               column < image.column + image.columns;
+    };
+    auto inRange = [&](std::uint32_t imageId) {
+        return imageId >= static_cast<std::uint32_t>(command.x) && imageId <= static_cast<std::uint32_t>(command.y);
+    };
+    auto matches = [&](const Image& image) {
+        if (image.kittyImage == 0) {
+            return false; // sixel images are not addressed by kitty commands
+        }
+        const bool shown = image.alternate == alternate;
+        switch (kind) {
+        case 'a': return shown;
+        case 'i':
+        case 'n':
+            return image.kittyImage == id && (command.placement == 0 || image.kittyPlacement == command.placement);
+        case 'c': return shown && covers(image, top + m_cursor.row, m_cursor.column);
+        case 'p': return shown && covers(image, cellRow, cellColumn);
+        case 'q': return shown && covers(image, cellRow, cellColumn) && image.z == command.z;
+        case 'x': return shown && cellColumn >= image.column && cellColumn < image.column + image.columns;
+        case 'y': return shown && cellRow >= image.row && cellRow < image.row + image.rows;
+        case 'z': return shown && image.z == command.z;
+        case 'r': return inRange(image.kittyImage);
+        default: return false; // 'f' (animation frames) and unknown kinds
+        }
+    };
+    const auto before = m_images.size();
+    m_images.erase(std::remove_if(m_images.begin(), m_images.end(), matches), m_images.end());
+    // Upper case also frees the data of the addressed images that are no longer shown; images
+    // without an id cannot be shown again anyway.
+    for (auto it = m_kittyImages.begin(); it != m_kittyImages.end();) {
+        const std::uint32_t imageId = it->first;
+        const bool addressed = ((kind == 'i' || kind == 'n') && imageId == id) || (kind == 'r' && inRange(imageId)) ||
+                               (kind != 'i' && kind != 'n' && kind != 'r');
+        const bool placed = std::any_of(m_images.begin(), m_images.end(),
+                                        [imageId](const Image& image) { return image.kittyImage == imageId; });
+        it = ((freeData && addressed) || it->second.anonymous) && !placed ? m_kittyImages.erase(it) : std::next(it);
+    }
+    if (m_images.size() != before) {
+        markFullDamage();
+    }
+}
+
+std::uint32_t Terminal::kittyNewestWithNumber(std::uint32_t number) const {
+    std::uint32_t id = 0;
+    std::uint64_t newest = 0;
+    for (const auto& [imageId, image] : m_kittyImages) {
+        if (image.number == number && image.serial > newest) {
+            newest = image.serial;
+            id = imageId;
+        }
+    }
+    return id;
+}
+
+void Terminal::kittyEnforceQuota() {
+    auto bytes = [this] {
+        std::size_t total = 0;
+        for (const auto& entry : m_kittyImages) {
+            total += entry.second.bitmap->pixels.size() * sizeof(std::uint32_t);
+        }
+        return total;
+    };
+    auto placed = [this](std::uint32_t id) {
+        return std::any_of(m_images.begin(), m_images.end(), [id](const Image& image) { return image.kittyImage == id; });
+    };
+    // Evict the oldest images, those that are not shown first.
+    while (m_kittyImages.size() > kMaxKittyImages || bytes() > kKittyQuota) {
+        auto victim = m_kittyImages.begin();
+        bool victimPlaced = placed(victim->first);
+        for (auto it = std::next(m_kittyImages.begin()); it != m_kittyImages.end(); ++it) {
+            const bool itPlaced = placed(it->first);
+            if ((victimPlaced && !itPlaced) || (itPlaced == victimPlaced && it->second.serial < victim->second.serial)) {
+                victim = it;
+                victimPlaced = itPlaced;
+            }
+        }
+        const std::uint32_t id = victim->first;
+        m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
+                                      [id](const Image& image) { return image.kittyImage == id; }),
+                       m_images.end());
+        m_kittyImages.erase(victim);
+    }
+}
+
+void Terminal::kittyRespond(const KittyCommand& command, std::uint32_t imageId, std::string_view error) {
+    // Only commands that name an image get answers, and q=1 / q=2 silence them.
+    if ((command.id == 0 && command.number == 0) || command.quiet >= 2 || (error.empty() && command.quiet == 1)) {
+        return;
+    }
+    std::string reply = "\x1b_Gi=" + std::to_string(imageId != 0 ? imageId : command.id);
+    if (command.number != 0) {
+        reply += ",I=" + std::to_string(command.number);
+    }
+    if (command.placement != 0) {
+        reply += ",p=" + std::to_string(command.placement);
+    }
+    reply += ';';
+    reply += error.empty() ? std::string_view("OK") : error;
+    reply += "\x1b\\";
+    respond(reply);
 }
 
 void Terminal::respond(std::string_view bytes) {

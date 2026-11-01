@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wt/terminal/Cell.h"
+#include "wt/terminal/KittyGraphics.h"
 #include "wt/terminal/Selection.h"
 #include "wt/terminal/Sixel.h"
 #include "wt/terminal/VtParser.h"
@@ -136,11 +137,12 @@ public:
     // trimmed: what the user typed after a prompt.
     std::string textFrom(GridPoint start) const;
 
-    // Sixel images (DCS q), anchored to absolute rows so they scroll with the text. Images on
-    // the alternate screen go away with it; erasing the display, resizing to another width and
-    // RIS remove them, and they are dropped once they scrolled out of the history.
+    // Images on the screen: sixel images (DCS q) and kitty graphics placements, anchored to
+    // absolute rows so they scroll with the text. Images on the alternate screen go away with
+    // it; erasing the display, resizing to another width and RIS remove them, and they are
+    // dropped once they scrolled out of the history.
     struct Image {
-        std::uint64_t id = 0;
+        std::uint64_t id = 0; // unique per placement
         std::shared_ptr<const Bitmap> bitmap;
         std::int64_t row = 0; // absolute row of the top edge
         int column = 0;
@@ -149,10 +151,30 @@ public:
         int cellWidth = 0;  // cell size in pixels when it was placed (for scaling on zoom)
         int cellHeight = 0;
         bool alternate = false;
+        // The part of the bitmap shown and its size on the screen (pixels at cellWidth x
+        // cellHeight), offset inside the first cell.
+        int sourceX = 0;
+        int sourceY = 0;
+        int sourceWidth = 0;
+        int sourceHeight = 0;
+        int pixelWidth = 0;
+        int pixelHeight = 0;
+        int offsetX = 0;
+        int offsetY = 0;
+        // Kitty graphics placements (kittyImage is 0 for sixel images).
+        std::uint32_t kittyImage = 0;
+        std::uint32_t kittyPlacement = 0;
+        std::int32_t z = 0; // below zero the image is drawn under the text
     };
-    // Images of the screen that is shown (primary or alternate).
+    // Images of the screen that is shown (primary or alternate), in drawing order.
     std::vector<const Image*> visibleImages() const;
     std::size_t imageCount() const { return m_images.size(); }
+    // Kitty graphics: images transmitted and kept for placements (not necessarily shown).
+    std::size_t kittyImageCount() const { return m_kittyImages.size(); }
+    // PNG decoding for kitty graphics comes from the GUI layer, keeping the model dependency-free.
+    void setPngDecoder(std::function<std::optional<Bitmap>(std::string_view png)> decoder) {
+        m_kittyDecoders.png = std::move(decoder);
+    }
 
     // Colours (OSC 4/10/11/12 may change them at runtime; RIS and OSC 104/110-112 restore the
     // defaults set here).
@@ -201,6 +223,7 @@ private:
     void oscDispatch(std::string_view payload, bool bellTerminated) override;
     void dcsDispatch(const CsiParams& params, char prefix, std::string_view intermediates, char final,
                      std::string_view data) override;
+    void apcDispatch(std::string_view data) override;
 
     void requestStatusString(std::string_view request); // DECRQSS
     void requestTermcap(std::string_view request);       // XTGETTCAP
@@ -241,6 +264,22 @@ private:
     void pruneImages();
     void eraseImages(std::int64_t firstRow, std::int64_t lastRow);
     void graphicsAttributes(const CsiParams& params); // XTSMGRAPHICS
+    // Kitty graphics protocol (APC G ...).
+    struct KittyImage {
+        std::uint32_t number = 0;
+        std::shared_ptr<const Bitmap> bitmap;
+        std::uint64_t serial = 0; // transmission order, for evicting the oldest
+        bool anonymous = false;   // sent without i / I: freed once it is not shown
+    };
+    void kittyGraphics(std::string_view data);
+    void kittyExecute(const KittyCommand& command, std::string data);
+    // Places an image at the cursor; returns an error ("ECODE:message") or "".
+    std::string kittyPut(const KittyCommand& command, std::uint32_t imageId);
+    void kittyDelete(const KittyCommand& command);
+    void kittyRespond(const KittyCommand& command, std::uint32_t imageId, std::string_view error);
+    void kittyEnforceQuota();
+    std::uint32_t kittyNewestWithNumber(std::uint32_t number) const;
+    void resetKittyGraphics();
     // Mode 2027: makes the just-printed narrow cell at `col` two cells wide (emoji presentation).
     void widenCell(int col);
     std::optional<std::uint32_t> internCluster(const std::u32string& text);
@@ -299,6 +338,13 @@ private:
     ShellMarks m_shellMarks;
     std::vector<Image> m_images;
     std::uint64_t m_nextImageId = 1;
+    std::unordered_map<std::uint32_t, KittyImage> m_kittyImages;
+    std::optional<KittyCommand> m_kittyPending; // first chunk of a chunked transmission
+    std::string m_kittyData;                    // its decoded data so far
+    bool m_kittyDataBad = false;                // invalid base64 or too much data
+    std::uint64_t m_kittySerial = 0;
+    std::uint32_t m_nextKittyId = 0x80000000u; // ids the terminal assigns
+    KittyDecoders m_kittyDecoders;
     std::uint64_t m_revision = 0;
 
     CursorShape m_defaultCursorShape = CursorShape::Block;

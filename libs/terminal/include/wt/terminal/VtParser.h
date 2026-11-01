@@ -73,16 +73,19 @@ public:
                              std::string_view data) {
         (void)params, (void)prefix, (void)intermediates, (void)final, (void)data;
     }
+    // Complete APC string (ESC _ ... ST) without the terminator, e.g. kitty graphics ("G...").
+    virtual void apcDispatch(std::string_view data) { (void)data; }
 };
 
 // DEC/ANSI escape sequence parser based on Paul Williams' VT500 state machine
 // (https://vt100.net/emu/dec_ansi_parser), operating on UTF-8 decoded code points.
-// DCS strings are collected (bounded) and dispatched; SOS/PM/APC strings are consumed and ignored.
+// DCS and APC strings are collected (bounded) and dispatched; SOS/PM strings are consumed and ignored.
 class VtParser {
 public:
     static constexpr std::size_t kMaxOscLength = 64 * 1024;
     static constexpr std::size_t kMaxDcsLength = 64 * 1024;
     static constexpr std::size_t kMaxSixelLength = 32 * 1024 * 1024;
+    static constexpr std::size_t kMaxApcLength = 32 * 1024 * 1024; // kitty graphics in one chunk
     static constexpr std::size_t kMaxIntermediates = 2;
 
     explicit VtParser(VtHandler& handler) : m_handler(handler) {}
@@ -105,7 +108,8 @@ private:
         DcsIntermediate,
         DcsPassthrough,
         DcsIgnore,     // malformed DCS: swallow until ST
-        IgnoredString, // SOS, PM, APC: swallow until ST
+        ApcString,
+        IgnoredString, // SOS, PM: swallow until ST
     };
 
     void advance(char32_t cp);
@@ -115,6 +119,7 @@ private:
     void dispatchCsi(char32_t final);
     void finishOsc(bool bellTerminated);
     void finishDcs();
+    void finishApc();
     // Common parameter/intermediate handling for CSI and DCS headers; returns false for bytes it
     // does not handle.
     bool collectParam(char32_t cp, State paramState, State intermediateState, State ignoreState);
@@ -130,6 +135,8 @@ private:
     std::string m_dcs;
     char m_dcsFinal = 0;
     bool m_dcsOverflow = false;
+    std::string m_apc;
+    bool m_apcOverflow = false;
 };
 
 } // namespace wt::terminal
