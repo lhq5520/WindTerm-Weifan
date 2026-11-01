@@ -9,13 +9,15 @@ add_library(wt_session STATIC
     include/wt/session/SessionProfile.h
     include/wt/session/Settings.h
     include/wt/session/Theme.h
+    include/wt/session/Workspace.h
     src/Backoff.cpp
     src/CommandHistory.cpp
     src/Keymap.cpp
     src/SessionLog.cpp
     src/SessionProfile.cpp
     src/Settings.cpp
-    src/Theme.cpp)
+    src/Theme.cpp
+    src/Workspace.cpp)
 add_library(wt::session ALIAS wt_session)
 
 target_include_directories(wt_session PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

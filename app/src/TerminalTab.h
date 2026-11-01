@@ -1,5 +1,7 @@
 #pragma once
 
+#include "wt/session/Workspace.h"
+
 #include <QList>
 #include <QPointer>
 #include <QWidget>
@@ -30,6 +32,8 @@ public:
     void focusNextPane(bool forward);
 
     QString title() const;
+    // The split layout with what every pane shows (session restore).
+    wt::session::LayoutNode captureLayout() const;
 
 Q_SIGNALS:
     void empty();

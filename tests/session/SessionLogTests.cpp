@@ -6,6 +6,7 @@
 #include "wt/session/CommandHistory.h"
 #include "wt/session/SessionLog.h"
 #include "wt/session/Settings.h"
+#include "wt/session/Workspace.h"
 
 #include <filesystem>
 #include <random>
@@ -230,4 +231,81 @@ WT_TEST(settings_logging_triggers_and_completion) {
     WT_CHECK_EQ(fixed.completion.minimumPrefix, 20);
 
     WT_CHECK_EQ(unescapeTriggerText("yes\\r\\n\\t\\e\\\\\\q"), std::string("yes\r\n\t\x1b\\\\q"));
+}
+
+WT_TEST(settings_security_and_restore) {
+    Settings settings;
+    WT_CHECK(settings.security.credentialStore == CredentialStoreKind::Vault);
+    WT_CHECK_EQ(settings.security.vaultLockMinutes, 30);
+    WT_CHECK(settings.restoreWorkspace);
+    settings.security.credentialStore = CredentialStoreKind::System;
+    settings.security.vaultLockMinutes = 0;
+    settings.restoreWorkspace = false;
+    std::vector<std::string> warnings;
+    const Settings loaded = Settings::fromJson(*core::Json::parse(settings.toJson().dump()), &warnings);
+    WT_CHECK(warnings.empty());
+    WT_CHECK(loaded == settings);
+    const Settings clamped =
+        Settings::fromJson(*core::Json::parse(R"({"security":{"credentialStore":"cloud","vaultLockMinutes":-5}})"), &warnings);
+    WT_CHECK_EQ(warnings.size(), std::size_t(1));
+    WT_CHECK(clamped.security.credentialStore == CredentialStoreKind::Vault);
+    WT_CHECK_EQ(clamped.security.vaultLockMinutes, 0);
+}
+
+WT_TEST(workspace_state_round_trip_and_validation) {
+    WorkspaceState state;
+    WindowState window;
+    window.geometry = "AdnQywADAAA=";
+    TabState split;
+    split.root.split = true;
+    split.root.vertical = false;
+    split.root.sizes = {300, 500};
+    LayoutNode left;
+    left.pane.program = "/bin/zsh";
+    left.pane.arguments = {"-l"};
+    left.pane.workingDirectory = "/srv/app";
+    left.pane.title = "zsh";
+    LayoutNode right;
+    right.split = true;
+    right.vertical = true;
+    right.sizes = {1, 1};
+    LayoutNode top;
+    top.pane.profileId = "prod";
+    LayoutNode bottom;
+    bottom.pane.profileJson = R"({"id":"x","name":"adhoc","kind":"telnet","telnet":{"host":"h"}})";
+    right.children = {top, bottom};
+    split.root.children = {left, right};
+    split.activePane = 2;
+    TabState single;
+    single.root.pane.workingDirectory = "/tmp";
+    window.tabs = {split, single};
+    window.currentTab = 1;
+    state.windows = {window};
+    WT_CHECK_EQ(split.root.paneCount(), 3);
+
+    const std::string path = tempPath("workspace.json");
+    WT_REQUIRE(state.save(path).isOk());
+    std::string error;
+    const auto loaded = WorkspaceState::load(path, &error);
+    WT_REQUIRE(loaded.has_value());
+    WT_CHECK(*loaded == state);
+    WT_CHECK(!WorkspaceState::load(path + ".missing", &error));
+    WT_CHECK(error.empty());
+
+    // Out-of-range indexes are clamped, sizes repaired; malformed splits rejected.
+    auto json = core::Json::parse(R"({"windows":[{"currentTab":9,"tabs":[{"activePane":7,
+        "layout":{"orientation":"vertical","sizes":[1],"children":[{"pane":{}},{"pane":{}}]}}]}]})");
+    const auto fixed = WorkspaceState::fromJson(*json);
+    WT_REQUIRE(fixed.has_value());
+    WT_CHECK_EQ(fixed->windows[0].currentTab, 0);
+    WT_CHECK_EQ(fixed->windows[0].tabs[0].activePane, 1);
+    WT_CHECK(fixed->windows[0].tabs[0].root.sizes == std::vector<int>({1, 1}));
+    WT_CHECK(!WorkspaceState::fromJson(*core::Json::parse(R"({"windows":[{"tabs":[{"layout":{"children":[{"pane":{}}]}}]}]})"),
+                                       &error));
+    WT_CHECK(!error.empty());
+    std::string deep = R"({"pane":{}})";
+    for (int i = 0; i < 20; ++i) {
+        deep = R"({"children":[)" + deep + R"(,{"pane":{}}]})";
+    }
+    WT_CHECK(!WorkspaceState::fromJson(*core::Json::parse(R"({"windows":[{"tabs":[{"layout":)" + deep + "}]}]}")));
 }

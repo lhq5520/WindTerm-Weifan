@@ -1,5 +1,7 @@
 #include "AppContext.h"
 
+#include "credentials/SystemCredentials.h"
+
 #include "wt/platform/Files.h"
 
 #ifdef WT_HAVE_VAULT
@@ -15,6 +17,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <cstring>
 #include <ctime>
 
 AppContext::AppContext(const QString& configDir, QObject* parent)
@@ -24,14 +27,52 @@ AppContext::AppContext(const QString& configDir, QObject* parent)
     m_historySave.setSingleShot(true);
     m_historySave.setInterval(2000);
     connect(&m_historySave, &QTimer::timeout, this, &AppContext::saveHistory);
+    m_vaultLock.setSingleShot(true);
+    connect(&m_vaultLock, &QTimer::timeout, this, &AppContext::lockVault);
     load();
 }
 
-AppContext::AppContext(EphemeralTag, QObject* parent) : QObject(parent), m_persistent(false) {}
+AppContext::AppContext(EphemeralTag, QObject* parent) : QObject(parent), m_persistent(false) {
+    m_vaultLock.setSingleShot(true);
+    connect(&m_vaultLock, &QTimer::timeout, this, &AppContext::lockVault);
+}
 
 AppContext::~AppContext() {
     if (m_historySave.isActive()) {
         saveHistory();
+    }
+}
+
+QString AppContext::workspacePath() const {
+    return QDir(m_configDir).filePath(QStringLiteral("workspace.json"));
+}
+
+std::optional<wt::session::WorkspaceState> AppContext::loadWorkspace() {
+    if (!m_persistent) {
+        return std::nullopt;
+    }
+    std::string error;
+    auto state = wt::session::WorkspaceState::load(workspacePath().toStdString(), &error);
+    if (!state && !error.empty()) {
+        m_warnings << QString::fromStdString(error);
+    }
+    return state;
+}
+
+bool AppContext::saveWorkspace(const wt::session::WorkspaceState& state) {
+    if (!m_persistent) {
+        return true;
+    }
+    if (const auto status = state.save(workspacePath().toStdString()); !status) {
+        m_lastError = QString::fromStdString(status.message());
+        return false;
+    }
+    return true;
+}
+
+void AppContext::clearWorkspace() {
+    if (m_persistent) {
+        QFile::remove(workspacePath());
     }
 }
 
@@ -154,6 +195,7 @@ void AppContext::load() {
 bool AppContext::setSettings(const wt::session::Settings& settings) {
     m_settings = settings;
     compileTriggers();
+    touchVault(); // a changed lock time applies at once
     bool ok = true;
     if (m_persistent) {
         const auto status =
@@ -266,6 +308,7 @@ bool AppContext::unlockVault(QWidget* parent) {
             m_vault = wt::security::CredentialVault::open(vaultPath().toStdString(), utf8, &error);
         }
         if (m_vault) {
+            touchVault();
             return true;
         }
         m_lastError = QString::fromStdString(error);
@@ -277,21 +320,28 @@ bool AppContext::unlockVault(QWidget* parent) {
 }
 
 void AppContext::lockVault() {
-    m_vault.reset();
+    m_vaultLock.stop();
+    const bool wasUnlocked = m_vault != nullptr;
+    m_vault.reset(); // wipes the key
+    if (wasUnlocked) {
+        Q_EMIT vaultLocked();
+    }
 }
 
-std::optional<std::string> AppContext::credential(const std::string& id, QWidget* parent) {
+std::optional<std::string> AppContext::vaultCredential(const std::string& id, QWidget* parent) {
     if (id.empty() || (!m_vault && (!vaultExists() || !unlockVault(parent)))) {
         return std::nullopt;
     }
+    touchVault();
     return m_vault->secret(id);
 }
 
-std::string AppContext::storeCredential(std::string id, const std::string& secret, const std::string& label,
-                                        QWidget* parent) {
+std::string AppContext::storeVaultCredential(std::string id, const std::string& secret, const std::string& label,
+                                             QWidget* parent) {
     if (!unlockVault(parent)) {
         return {};
     }
+    touchVault();
     if (id.empty()) {
         id = wt::security::CredentialVault::newId();
     }
@@ -303,10 +353,11 @@ std::string AppContext::storeCredential(std::string id, const std::string& secre
     return id;
 }
 
-bool AppContext::removeCredential(const std::string& id, QWidget* parent) {
+bool AppContext::removeVaultCredential(const std::string& id, QWidget* parent) {
     if (!unlockVault(parent) || !m_vault->remove(id)) {
         return false;
     }
+    touchVault();
     return m_vault->save().isOk();
 }
 
@@ -323,15 +374,98 @@ bool AppContext::unlockVault(QWidget*) {
     return false;
 }
 void AppContext::lockVault() {}
-std::optional<std::string> AppContext::credential(const std::string&, QWidget*) {
+std::optional<std::string> AppContext::vaultCredential(const std::string&, QWidget*) {
     return std::nullopt;
 }
-std::string AppContext::storeCredential(std::string, const std::string&, const std::string&, QWidget*) {
+std::string AppContext::storeVaultCredential(std::string, const std::string&, const std::string&, QWidget*) {
     m_lastError = tr("This build has no credential vault (OpenSSL 3.2+ was not found)");
     return {};
 }
-bool AppContext::removeCredential(const std::string&, QWidget*) {
+bool AppContext::removeVaultCredential(const std::string&, QWidget*) {
     return false;
 }
 
 #endif
+
+// ---------------------------------------------------------------------------------------------
+// Credentials: vault entries have plain ids, system store entries "system:<account>".
+
+bool AppContext::isSystemCredential(const std::string& id) {
+    return id.rfind(kSystemCredentialPrefix, 0) == 0;
+}
+
+bool AppContext::systemCredentialsAvailable() const {
+    return SystemCredentials::available();
+}
+
+QString AppContext::credentialStoreName() const {
+    if (m_settings.security.credentialStore == wt::session::CredentialStoreKind::System && systemCredentialsAvailable()) {
+        return SystemCredentials::storeName();
+    }
+    return tr("encrypted credential vault");
+}
+
+std::optional<std::string> AppContext::credential(const std::string& id, QWidget* parent) {
+    if (!isSystemCredential(id)) {
+        return vaultCredential(id, parent);
+    }
+    QString error;
+    auto secret = SystemCredentials::load(QString::fromStdString(id.substr(std::strlen(kSystemCredentialPrefix))), &error);
+    if (!secret && !error.isEmpty()) {
+        m_lastError = error;
+    }
+    return secret;
+}
+
+std::string AppContext::storeCredential(std::string id, const std::string& secret, const std::string& label,
+                                        QWidget* parent) {
+    const bool useSystem =
+        isSystemCredential(id) ||
+        (id.empty() && m_settings.security.credentialStore == wt::session::CredentialStoreKind::System &&
+         systemCredentialsAvailable());
+    if (!useSystem) {
+        return storeVaultCredential(std::move(id), secret, label, parent);
+    }
+    if (id.empty()) {
+        id = kSystemCredentialPrefix + wt::session::SessionStore::generateId();
+    }
+    QString error;
+    if (!SystemCredentials::store(QString::fromStdString(id.substr(std::strlen(kSystemCredentialPrefix))),
+                                  QStringLiteral("WindTerm-Weifan: %1").arg(QString::fromStdString(label)), secret,
+                                  &error)) {
+        m_lastError = error;
+        return {};
+    }
+    return id;
+}
+
+bool AppContext::removeCredential(const std::string& id, QWidget* parent) {
+    if (!isSystemCredential(id)) {
+        return removeVaultCredential(id, parent);
+    }
+    QString error;
+    if (!SystemCredentials::remove(QString::fromStdString(id.substr(std::strlen(kSystemCredentialPrefix))), &error)) {
+        m_lastError = error;
+        return false;
+    }
+    return true;
+}
+
+void AppContext::setVaultLockTimeout(std::chrono::milliseconds timeout) {
+    m_vaultLockOverride = timeout;
+    touchVault();
+}
+
+void AppContext::touchVault() {
+    if (!isVaultUnlocked()) {
+        return;
+    }
+    const auto timeout = m_vaultLockOverride.count() > 0
+                             ? m_vaultLockOverride
+                             : std::chrono::milliseconds(std::chrono::minutes(m_settings.security.vaultLockMinutes));
+    if (timeout.count() <= 0) {
+        m_vaultLock.stop();
+        return;
+    }
+    m_vaultLock.start(static_cast<int>(std::min<std::chrono::milliseconds::rep>(timeout.count(), 0x7FFFFFFF)));
+}

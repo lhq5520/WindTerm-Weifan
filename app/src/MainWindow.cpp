@@ -27,6 +27,7 @@
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
@@ -82,6 +83,8 @@ MainWindow::MainWindow(Options options, AppContext* context, QWidget* parent)
     });
     connect(m_context, &AppContext::settingsChanged, this, &MainWindow::applySettings);
     connect(m_context, &AppContext::sessionsChanged, this, &MainWindow::rebuildSessionsMenu);
+    connect(m_context, &AppContext::vaultLocked, this,
+            [this] { statusBar()->showMessage(tr("The credential vault was locked"), 5000); });
 
     createActions();
     createMenus();
@@ -119,6 +122,102 @@ bool MainWindow::start() {
 
 int MainWindow::tabCount() const {
     return m_tabs->count();
+}
+
+wt::session::WindowState MainWindow::captureState() const {
+    wt::session::WindowState state;
+    state.geometry = saveGeometry().toBase64().toStdString();
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (TerminalTab* tab = tabAt(i)) {
+            wt::session::TabState tabState;
+            tabState.root = tab->captureLayout();
+            tabState.activePane = std::max(0, static_cast<int>(tab->panes().indexOf(tab->activePane())));
+            state.tabs.push_back(std::move(tabState));
+        }
+    }
+    state.currentTab = std::max(0, m_tabs->currentIndex());
+    return state;
+}
+
+bool MainWindow::restoreState(const wt::session::WindowState& state) {
+    if (state.tabs.empty() || !m_firstPane || m_tabs->count() != 1) {
+        return false;
+    }
+    if (!state.geometry.empty()) {
+        restoreGeometry(QByteArray::fromBase64(QByteArray::fromStdString(state.geometry)));
+    }
+    for (std::size_t i = 0; i < state.tabs.size(); ++i) {
+        TerminalPane* anchor = i == 0 ? m_firstPane : createPane();
+        TerminalTab* tab = i == 0 ? tabAt(0) : addTab(anchor);
+        restoreNode(tab, state.tabs[i].root, anchor);
+        const QList<TerminalPane*> panes = tab->panes();
+        const int active = state.tabs[i].activePane;
+        if (active >= 0 && active < panes.size()) {
+            tab->setActivePane(panes[active]);
+        }
+    }
+    m_tabs->setCurrentIndex(std::clamp(state.currentTab, 0, m_tabs->count() - 1));
+    updateTitles();
+    return true;
+}
+
+void MainWindow::restoreNode(TerminalTab* tab, const wt::session::LayoutNode& node, TerminalPane* anchor) {
+    if (!node.split) {
+        startPaneFromState(anchor, node.pane);
+        return;
+    }
+    // First the panes of this level (each child's first pane), side by side; then each child.
+    const Qt::Orientation orientation = node.vertical ? Qt::Vertical : Qt::Horizontal;
+    std::vector<TerminalPane*> firsts{anchor};
+    for (std::size_t i = 1; i < node.children.size(); ++i) {
+        TerminalPane* pane = createPane();
+        tab->split(firsts.back(), orientation, pane);
+        firsts.push_back(pane);
+    }
+    auto* splitter = qobject_cast<QSplitter*>(anchor->parentWidget());
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        restoreNode(tab, node.children[i], firsts[i]);
+    }
+    if (splitter && static_cast<int>(node.sizes.size()) == splitter->count()) {
+        splitter->setSizes(QList<int>(node.sizes.begin(), node.sizes.end()));
+    }
+}
+
+void MainWindow::startPaneFromState(TerminalPane* pane, const wt::session::PaneState& state) {
+    std::optional<wt::session::SessionProfile> profile;
+    if (const auto* saved = m_context->sessions().find(state.profileId); saved && !state.profileId.empty()) {
+        profile = *saved;
+    } else if (!state.profileJson.empty()) {
+        if (const auto json = wt::core::Json::parse(state.profileJson)) {
+            profile = wt::session::SessionProfile::fromJson(*json);
+        }
+    }
+    const QString cwd = QString::fromStdString(state.workingDirectory);
+    const bool cwdExists = !cwd.isEmpty() && QDir(cwd).exists();
+    if (profile) {
+        if (profile->kind == wt::session::SessionKind::Local && cwdExists) {
+            profile->local.workingDirectory = state.workingDirectory;
+        }
+        if (!startPaneProfile(pane, *profile)) {
+            pane->session()->showNotice(m_errorString);
+        }
+        return;
+    }
+    if (!state.profileId.empty()) {
+        pane->session()->showNotice(tr("[The saved session \"%1\" no longer exists]").arg(QString::fromStdString(state.title)));
+    }
+    TerminalSession::Options options;
+    options.program = QString::fromStdString(state.program);
+    for (const auto& argument : state.arguments) {
+        options.arguments << QString::fromStdString(argument);
+    }
+    options.workingDirectory = cwdExists ? cwd : QDir::homePath();
+#ifdef Q_OS_MACOS
+    options.loginShell = options.program.isEmpty();
+#endif
+    if (!startPaneLocal(pane, options)) {
+        pane->session()->showNotice(m_errorString);
+    }
 }
 
 TerminalTab* MainWindow::tabAt(int index) const {
@@ -532,6 +631,13 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             event->ignore();
             return;
         }
+    }
+    if (m_context->settings().restoreWorkspace) {
+        wt::session::WorkspaceState workspace;
+        workspace.windows.push_back(captureState());
+        m_context->saveWorkspace(workspace);
+    } else {
+        m_context->clearWorkspace();
     }
     m_closing = true;
     event->accept();

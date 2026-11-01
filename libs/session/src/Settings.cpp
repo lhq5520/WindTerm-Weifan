@@ -17,6 +17,8 @@ constexpr EnumName<CursorStyle> kCursorStyles[] = {
 constexpr EnumName<BellStyle> kBellStyles[] = {
     {BellStyle::None, "none"}, {BellStyle::Visual, "visual"}, {BellStyle::Audible, "audible"}};
 constexpr EnumName<LogFormat> kLogFormats[] = {{LogFormat::Text, "text"}, {LogFormat::Raw, "raw"}};
+constexpr EnumName<CredentialStoreKind> kCredentialStores[] = {{CredentialStoreKind::Vault, "vault"},
+                                                               {CredentialStoreKind::System, "system"}};
 constexpr EnumName<TriggerAction> kTriggerActions[] = {{TriggerAction::Highlight, "highlight"},
                                                        {TriggerAction::Notify, "notify"},
                                                        {TriggerAction::Beep, "beep"},
@@ -97,6 +99,10 @@ core::Json Settings::toJson() const {
     core::Json& c = json["completion"];
     c["enabled"] = completion.enabled;
     c["minimumPrefix"] = completion.minimumPrefix;
+    core::Json& sec = json["security"];
+    sec["credentialStore"] = enumToString(kCredentialStores, security.credentialStore);
+    sec["vaultLockMinutes"] = security.vaultLockMinutes;
+    json["restoreWorkspace"] = restoreWorkspace;
     return json;
 }
 
@@ -194,6 +200,12 @@ Settings Settings::fromJson(const core::Json& json, std::vector<std::string>* wa
     const core::Json& c = json["completion"];
     s.completion.enabled = c["enabled"].toBool(true);
     s.completion.minimumPrefix = static_cast<int>(std::clamp<std::int64_t>(c["minimumPrefix"].toInt(2), 1, 20));
+    const core::Json& sec = json["security"];
+    s.security.credentialStore = enumFromJson(kCredentialStores, sec["credentialStore"], CredentialStoreKind::Vault,
+                                              "security.credentialStore", warnings);
+    s.security.vaultLockMinutes =
+        static_cast<int>(std::clamp<std::int64_t>(sec["vaultLockMinutes"].toInt(30), 0, 7 * 24 * 60));
+    s.restoreWorkspace = json["restoreWorkspace"].toBool(true);
     if (!findTheme(s.terminal.theme, s.customThemes)) {
         if (warnings) {
             warnings->push_back("unknown theme \"" + s.terminal.theme + "\"");

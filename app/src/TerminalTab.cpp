@@ -157,3 +157,27 @@ QString TerminalTab::title() const {
     TerminalPane* pane = activePane();
     return pane ? pane->title() : QString();
 }
+
+namespace {
+
+wt::session::LayoutNode captureNode(QWidget* widget) {
+    wt::session::LayoutNode node;
+    if (auto* pane = qobject_cast<TerminalPane*>(widget)) {
+        node.pane = pane->paneState();
+    } else if (auto* splitter = qobject_cast<QSplitter*>(widget)) {
+        node.split = true;
+        node.vertical = splitter->orientation() == Qt::Vertical;
+        for (int i = 0; i < splitter->count(); ++i) {
+            node.children.push_back(captureNode(splitter->widget(i)));
+        }
+        const QList<int> sizes = splitter->sizes();
+        node.sizes.assign(sizes.begin(), sizes.end());
+    }
+    return node;
+}
+
+} // namespace
+
+wt::session::LayoutNode TerminalTab::captureLayout() const {
+    return captureNode(m_root);
+}

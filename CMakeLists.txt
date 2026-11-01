@@ -78,6 +78,9 @@ endif()
 
 if(WT_BUILD_APP)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
+    if(UNIX AND NOT APPLE)
+        find_package(Qt6 6.5 REQUIRED COMPONENTS DBus) # Secret Service credential store
+    endif()
     add_subdirectory(app)
 endif()
 

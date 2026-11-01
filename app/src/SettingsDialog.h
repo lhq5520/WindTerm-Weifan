@@ -67,4 +67,7 @@ private:
     QSpinBox* m_completionPrefix = nullptr;
     std::vector<wt::session::TriggerRule> m_triggers;
     QTreeWidget* m_triggerList = nullptr;
+    QComboBox* m_credentialStore = nullptr;
+    QSpinBox* m_vaultLock = nullptr;
+    QCheckBox* m_restoreWorkspace = nullptr;
 };

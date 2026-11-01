@@ -75,7 +75,15 @@ int main(int argc, char* argv[]) {
     }
 
     MainWindow window(options, context);
-    if (!window.start()) {
+    // Without an explicit command or session, reopen what was open when the app last quit.
+    bool restored = false;
+    const bool explicitStart = !positional.isEmpty() || !options.profileId.isEmpty() || parser.isSet(cwdOption);
+    if (!explicitStart && context->isPersistent() && context->settings().restoreWorkspace) {
+        if (const auto workspace = context->loadWorkspace(); workspace && !workspace->windows.empty()) {
+            restored = window.restoreState(workspace->windows.front());
+        }
+    }
+    if (!restored && !window.start()) {
         const QString message = QObject::tr("Failed to start the terminal session:\n%1").arg(window.errorString());
         std::fprintf(stderr, "%s\n", qPrintable(message));
         const QString platform = QGuiApplication::platformName();

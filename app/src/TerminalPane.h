@@ -3,6 +3,7 @@
 #include "TerminalSession.h"
 
 #include "wt/session/SessionProfile.h"
+#include "wt/session/Workspace.h"
 
 #include <QPointer>
 #include <QWidget>
@@ -51,6 +52,8 @@ public:
     QString historyContext() const;
     // Host-ish name for log file names ("db.example.com", "ttyUSB0", "local").
     QString hostName() const;
+    // What it takes to open this pane again (session restore).
+    wt::session::PaneState paneState() const;
 
 Q_SIGNALS:
     void titleChanged();
@@ -68,5 +71,6 @@ private:
     TerminalWidget* m_terminal;
     SearchBar* m_searchBar;
     std::optional<wt::session::SessionProfile> m_profile;
+    TerminalSession::Options m_localOptions; // how the local process was started
     QString m_fallbackTitle;
 };

@@ -17,6 +17,7 @@ wt_add_gui_test(wt_app_tests AppTests.cpp)
 wt_add_gui_test(wt_workspace_tests WorkspaceTests.cpp)
 wt_add_gui_test(wt_protocol_app_tests ProtocolAppTests.cpp)
 wt_add_gui_test(wt_feature_tests FeatureTests.cpp)
+wt_add_gui_test(wt_credential_tests CredentialTests.cpp)
 
 if(WT_HAVE_SSH AND NOT WIN32)
     wt_add_gui_test(wt_ssh_app_tests SshAppTests.cpp)

@@ -6,6 +6,8 @@ set(CMAKE_AUTOMOC ON)
 add_library(wt_app STATIC
     src/AppContext.cpp
     src/AppContext.h
+    src/credentials/SystemCredentials.cpp
+    src/credentials/SystemCredentials.h
     src/ForwardEditDialog.cpp
     src/ForwardEditDialog.h
     src/MainWindow.cpp
@@ -53,6 +55,12 @@ endif()
 if(WT_HAVE_VAULT)
     target_link_libraries(wt_app PUBLIC wt::security)
     target_compile_definitions(wt_app PUBLIC WT_HAVE_VAULT=1)
+endif()
+if(UNIX AND NOT APPLE)
+    # Secret Service (GNOME Keyring, KWallet, KeePassXC) for the system credential store.
+    target_sources(wt_app PRIVATE src/credentials/SecretService.cpp src/credentials/SecretService.h)
+    target_link_libraries(wt_app PUBLIC Qt6::DBus)
+    target_compile_definitions(wt_app PUBLIC WT_HAVE_SECRET_SERVICE=1)
 endif()
 target_include_directories(wt_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(wt_app PUBLIC Qt6::Widgets wt::terminal wt::platform wt::net wt::session)

@@ -58,6 +58,17 @@ struct LoggingSettings {
     friend bool operator==(const LoggingSettings&, const LoggingSettings&) = default;
 };
 
+enum class CredentialStoreKind { Vault, System };
+
+struct SecuritySettings {
+    // Where remembered passwords go: the encrypted vault (master password) or the operating
+    // system's store (macOS Keychain, Windows Credential Manager, Secret Service).
+    CredentialStoreKind credentialStore = CredentialStoreKind::Vault;
+    int vaultLockMinutes = 30; // lock the vault after this much inactivity; 0 = never
+
+    friend bool operator==(const SecuritySettings&, const SecuritySettings&) = default;
+};
+
 struct CompletionSettings {
     bool enabled = true;   // suggest commands from the history while typing at a prompt
     int minimumPrefix = 2; // characters typed before suggestions appear
@@ -79,6 +90,8 @@ struct Settings {
     LoggingSettings logging;
     std::vector<TriggerRule> triggers;
     CompletionSettings completion;
+    SecuritySettings security;
+    bool restoreWorkspace = true; // reopen the last window layout and sessions on start
 
     core::Json toJson() const;
     // Unknown keys are ignored and out-of-range values clamped; `warnings` lists what was fixed.

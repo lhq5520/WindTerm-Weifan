@@ -87,7 +87,31 @@ bool TerminalPane::isRemote() const {
     return m_profile && m_profile->isRemote();
 }
 
+wt::session::PaneState TerminalPane::paneState() const {
+    wt::session::PaneState state;
+    state.title = title().toStdString();
+    if (m_profile) {
+        if (m_context && m_context->sessions().find(m_profile->id)) {
+            state.profileId = m_profile->id;
+        } else {
+            state.profileJson = m_profile->toJson().dump(); // references secrets by id only
+        }
+        if (m_profile->kind != wt::session::SessionKind::Local) {
+            return state;
+        }
+    } else {
+        state.program = m_localOptions.program.toStdString();
+        for (const QString& argument : m_localOptions.arguments) {
+            state.arguments.push_back(argument.toStdString());
+        }
+    }
+    const std::string& cwd = m_session->terminal().workingDirectory();
+    state.workingDirectory = !cwd.empty() ? cwd : m_localOptions.workingDirectory.toStdString();
+    return state;
+}
+
 bool TerminalPane::startLocal(const TerminalSession::Options& options) {
+    m_localOptions = options;
     m_fallbackTitle = options.program.isEmpty() ? QFileInfo(QString::fromStdString(wt::platform::defaultShell())).fileName()
                                                 : QFileInfo(options.program).fileName();
     if (!m_session->start(options)) {

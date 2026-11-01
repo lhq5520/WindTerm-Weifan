@@ -46,7 +46,7 @@ SettingsDialog::SettingsDialog(const Settings& settings, QWidget* parent) : QDia
     pages->addTab(createAppearancePage(), tr("Appearance"));
     pages->addTab(createTerminalPage(), tr("Terminal"));
     pages->addTab(createKeyboardPage(), tr("Keyboard"));
-    pages->addTab(createSshPage(), tr("SSH"));
+    pages->addTab(createSshPage(), tr("SSH && Security"));
     pages->addTab(createLoggingPage(), tr("Logging && Triggers"));
     layout->addWidget(pages);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -179,6 +179,27 @@ QWidget* SettingsDialog::createSshPage() {
     row->addWidget(m_knownHosts, 1);
     row->addWidget(browse);
     form->addRow(tr("Known hosts file:"), row);
+
+    m_credentialStore = new QComboBox(page);
+    m_credentialStore->setObjectName(QStringLiteral("credentialStore"));
+    m_credentialStore->addItem(tr("Encrypted vault (master password)"), static_cast<int>(CredentialStoreKind::Vault));
+    m_credentialStore->addItem(tr("System keychain"), static_cast<int>(CredentialStoreKind::System));
+    m_credentialStore->setCurrentIndex(
+        std::max(0, m_credentialStore->findData(static_cast<int>(m_original.security.credentialStore))));
+    m_credentialStore->setToolTip(tr("macOS Keychain, Windows Credential Manager or the desktop keyring (Secret "
+                                     "Service). Existing secrets stay where they are."));
+    m_vaultLock = new QSpinBox(page);
+    m_vaultLock->setObjectName(QStringLiteral("vaultLockMinutes"));
+    m_vaultLock->setRange(0, 7 * 24 * 60);
+    m_vaultLock->setValue(m_original.security.vaultLockMinutes);
+    m_vaultLock->setSuffix(tr(" min"));
+    m_vaultLock->setSpecialValueText(tr("Never"));
+    m_restoreWorkspace = new QCheckBox(tr("Reopen the last windows, tabs and sessions on start"), page);
+    m_restoreWorkspace->setObjectName(QStringLiteral("restoreWorkspace"));
+    m_restoreWorkspace->setChecked(m_original.restoreWorkspace);
+    form->addRow(tr("Remember passwords in:"), m_credentialStore);
+    form->addRow(tr("Lock the vault when idle for:"), m_vaultLock);
+    form->addRow(QString(), m_restoreWorkspace);
     return page;
 }
 
@@ -384,6 +405,9 @@ Settings SettingsDialog::settings() const {
     s.completion.enabled = m_completion->isChecked();
     s.completion.minimumPrefix = m_completionPrefix->value();
     s.triggers = m_triggers;
+    s.security.credentialStore = static_cast<CredentialStoreKind>(m_credentialStore->currentData().toInt());
+    s.security.vaultLockMinutes = m_vaultLock->value();
+    s.restoreWorkspace = m_restoreWorkspace->isChecked();
     return s;
 }
 

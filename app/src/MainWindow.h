@@ -4,6 +4,7 @@
 
 #include "wt/session/Keymap.h"
 #include "wt/session/SessionProfile.h"
+#include "wt/session/Workspace.h"
 
 #include <QHash>
 #include <QMainWindow>
@@ -40,6 +41,10 @@ public:
     // Starts the first tab; on failure errorString() explains why.
     bool start();
     QString errorString() const { return m_errorString; }
+    // Session restore: the window's geometry, tabs and split layouts with what each pane shows.
+    wt::session::WindowState captureState() const;
+    // Instead of start(): reopens the tabs of a saved window. False if there was nothing to open.
+    bool restoreState(const wt::session::WindowState& state);
 
     AppContext* context() const { return m_context; }
     QTabWidget* tabs() const { return m_tabs; }
@@ -108,6 +113,8 @@ private:
     void onPaneStarted(TerminalPane* pane);
     void onTriggerNotification(TerminalPane* pane, const QString& title, const QString& message);
     QList<TerminalPane*> allPanes() const;
+    void restoreNode(TerminalTab* tab, const wt::session::LayoutNode& node, TerminalPane* anchor);
+    void startPaneFromState(TerminalPane* pane, const wt::session::PaneState& state);
 
     Options m_options;
     AppContext* m_context; // outlives the window (or is owned by it, see the constructor)

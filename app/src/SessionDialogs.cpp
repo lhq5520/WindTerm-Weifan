@@ -200,7 +200,9 @@ QWidget* SessionEditDialog::createSshPage() {
     m_secret->setEchoMode(QLineEdit::Password);
     m_secret->setPlaceholderText(ssh.credentialId.empty() ? tr("Ask when connecting")
                                                           : tr("Stored in the credential vault"));
-    m_storeSecret = new QCheckBox(tr("Store in the encrypted credential vault"), page);
+    m_storeSecret = new QCheckBox(
+        tr("Remember it in the %1").arg(m_context ? m_context->credentialStoreName() : tr("encrypted credential vault")),
+        page);
     m_storeSecret->setObjectName(QStringLiteral("storeSecret"));
     m_storeSecret->setChecked(!ssh.credentialId.empty());
     m_keepAlive = spinBox(0, 3600, ssh.keepAliveSeconds, page);
