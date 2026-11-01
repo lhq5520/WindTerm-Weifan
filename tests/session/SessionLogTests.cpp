@@ -241,13 +241,15 @@ WT_TEST(settings_security_and_restore) {
     settings.security.credentialStore = CredentialStoreKind::System;
     settings.security.vaultLockMinutes = 0;
     settings.restoreWorkspace = false;
+    settings.language = "zh_CN";
     std::vector<std::string> warnings;
     const Settings loaded = Settings::fromJson(*core::Json::parse(settings.toJson().dump()), &warnings);
     WT_CHECK(warnings.empty());
     WT_CHECK(loaded == settings);
-    const Settings clamped =
-        Settings::fromJson(*core::Json::parse(R"({"security":{"credentialStore":"cloud","vaultLockMinutes":-5}})"), &warnings);
-    WT_CHECK_EQ(warnings.size(), std::size_t(1));
+    const Settings clamped = Settings::fromJson(
+        *core::Json::parse(R"({"security":{"credentialStore":"cloud","vaultLockMinutes":-5},"language":"../x"})"), &warnings);
+    WT_CHECK_EQ(warnings.size(), std::size_t(2));
+    WT_CHECK(clamped.language.empty());
     WT_CHECK(clamped.security.credentialStore == CredentialStoreKind::Vault);
     WT_CHECK_EQ(clamped.security.vaultLockMinutes, 0);
 }

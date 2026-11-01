@@ -103,6 +103,7 @@ core::Json Settings::toJson() const {
     sec["credentialStore"] = enumToString(kCredentialStores, security.credentialStore);
     sec["vaultLockMinutes"] = security.vaultLockMinutes;
     json["restoreWorkspace"] = restoreWorkspace;
+    json["language"] = language;
     return json;
 }
 
@@ -206,6 +207,14 @@ Settings Settings::fromJson(const core::Json& json, std::vector<std::string>* wa
     s.security.vaultLockMinutes =
         static_cast<int>(std::clamp<std::int64_t>(sec["vaultLockMinutes"].toInt(30), 0, 7 * 24 * 60));
     s.restoreWorkspace = json["restoreWorkspace"].toBool(true);
+    s.language = json["language"].toString();
+    if (s.language.size() > 16 || s.language.find_first_not_of(
+                                      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-") != std::string::npos) {
+        if (warnings) {
+            warnings->push_back("invalid language \"" + s.language + "\"");
+        }
+        s.language.clear();
+    }
     if (!findTheme(s.terminal.theme, s.customThemes)) {
         if (warnings) {
             warnings->push_back("unknown theme \"" + s.terminal.theme + "\"");

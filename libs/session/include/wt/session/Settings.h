@@ -92,6 +92,7 @@ struct Settings {
     CompletionSettings completion;
     SecuritySettings security;
     bool restoreWorkspace = true; // reopen the last window layout and sessions on start
+    std::string language;         // user interface language: "" = system, "en", "zh_CN"
 
     core::Json toJson() const;
     // Unknown keys are ignored and out-of-range values clamped; `warnings` lists what was fixed.

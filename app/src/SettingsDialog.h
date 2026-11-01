@@ -70,4 +70,5 @@ private:
     QComboBox* m_credentialStore = nullptr;
     QSpinBox* m_vaultLock = nullptr;
     QCheckBox* m_restoreWorkspace = nullptr;
+    QComboBox* m_language = nullptr;
 };

@@ -8,9 +8,11 @@
 #include "TerminalSession.h"
 #include "TerminalTab.h"
 #include "TerminalWidget.h"
+#include "Translations.h"
 
 #include "wt/platform/Files.h"
 
+#include <QMenuBar>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -234,6 +236,38 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(screenContains(*first->session(), QStringLiteral("solo-1")), 5000);
         QTest::qWait(200);
         QCOMPARE(countOnScreen(*second->session(), QStringLiteral("solo-1")), 0);
+    }
+
+    void chineseTranslationIsComplete() {
+        QCOMPARE(Translations::install(qApp, QStringLiteral("zh_CN")), QStringLiteral("zh_CN"));
+        {
+            AppContext* context = makeContext();
+            auto w = window(context, QStringLiteral("exec sleep 30"));
+            QVERIFY(w);
+            QStringList menus;
+            for (QAction* action : w->menuBar()->actions()) {
+                menus << action->text();
+            }
+            QVERIFY2(menus.contains(QStringLiteral("文件(&F)")), qPrintable(menus.join(QLatin1Char(','))));
+            QVERIFY(menus.contains(QStringLiteral("会话(&S)")));
+            QCOMPARE(w->action(Action::NewTab)->text(), QStringLiteral("新建标签页"));
+            QCOMPARE(w->action(Action::BroadcastToAll)->text(), QStringLiteral("广播输入到所有标签页"));
+            SettingsDialog dialog(context->settings());
+            QCOMPARE(dialog.windowTitle(), QStringLiteral("设置"));
+            QCOMPARE(QCoreApplication::translate("MainWindow", "%n session(s) are still running. Close the window anyway?",
+                                                 nullptr, 3),
+                     QStringLiteral("仍有 3 个会话正在运行。仍要关闭窗口吗？"));
+        }
+        // Every action title has a translation (titles come from the Qt-free keymap).
+        for (const auto& info : allActions()) {
+            QVERIFY2(Translations::actionTitle(info.title.data()) != QString::fromUtf8(info.title.data()),
+                     info.title.data());
+        }
+        Translations::uninstall(qApp);
+        QCOMPARE(Translations::actionTitle("New Tab"), QStringLiteral("New Tab"));
+        QCOMPARE(Translations::install(qApp, QStringLiteral("en")), QStringLiteral("en"));
+        QCOMPARE(Translations::install(qApp, QStringLiteral("xx_YY")), QStringLiteral("en")); // unknown: English
+        Translations::uninstall(qApp);
     }
 
     void settingsDialogEditsLoggingAndTriggers() {

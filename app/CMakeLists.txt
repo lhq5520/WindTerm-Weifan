@@ -33,6 +33,8 @@ add_library(wt_app STATIC
     src/TerminalTab.h
     src/TerminalWidget.cpp
     src/TerminalWidget.h
+    src/Translations.cpp
+    src/Translations.h
     src/TriggerEditDialog.cpp
     src/TriggerEditDialog.h
     src/Triggers.cpp
@@ -66,6 +68,18 @@ target_include_directories(wt_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(wt_app PUBLIC Qt6::Widgets wt::terminal wt::platform wt::net wt::session)
 target_compile_definitions(wt_app PUBLIC QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
 wt_configure_target(wt_app)
+
+# Translations: lrelease runs as part of the build and the .qm files are embedded under :/i18n.
+# Refresh the .ts files from the sources with:  cmake --build <dir> --target update_translations
+find_package(Qt6 6.5 COMPONENTS LinguistTools)
+if(Qt6LinguistTools_FOUND)
+    qt_add_translations(wt_app
+        TS_FILES translations/windterm-weifan_zh_CN.ts
+        RESOURCE_PREFIX "/i18n"
+        LUPDATE_OPTIONS -no-obsolete -locations none)
+else()
+    message(WARNING "Qt LinguistTools not found: building without translations")
+endif()
 
 set(WT_APP_RESOURCES resources/app.qrc)
 if(APPLE)

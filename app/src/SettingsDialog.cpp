@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 
 #include "TerminalWidget.h"
+#include "Translations.h"
 #include "TriggerEditDialog.h"
 
 #include <QCheckBox>
@@ -101,6 +102,18 @@ QWidget* SettingsDialog::createAppearancePage() {
     form->addRow(tr("Colour theme:"), m_theme);
     form->addRow(tr("Cursor:"), m_cursorStyle);
     form->addRow(QString(), m_cursorBlink);
+
+    m_language = new QComboBox(page);
+    m_language->setObjectName(QStringLiteral("language"));
+    m_language->addItem(tr("System default"), QString());
+    for (const auto& [code, name] : Translations::available()) {
+        m_language->addItem(name, code);
+    }
+    m_language->setCurrentIndex(std::max(0, m_language->findData(QString::fromStdString(m_original.language))));
+    auto* languageNote = new QLabel(tr("Takes effect the next time the application starts."), page);
+    languageNote->setWordWrap(true);
+    form->addRow(tr("Language:"), m_language);
+    form->addRow(QString(), languageNote);
     return page;
 }
 
@@ -322,7 +335,7 @@ void SettingsDialog::loadKeymap(const Keymap& keymap) {
     const QSignalBlocker blocker(m_keys);
     int row = 0;
     for (const ActionInfo& info : allActions()) {
-        auto* name = new QTableWidgetItem(tr(info.title.data()));
+        auto* name = new QTableWidgetItem(Translations::actionTitle(info.title.data()));
         name->setFlags(name->flags() & ~Qt::ItemIsEditable);
         name->setData(Qt::UserRole, static_cast<int>(info.action));
         m_keys->setItem(row, 0, name);
@@ -356,7 +369,7 @@ Keymap SettingsDialog::editedKeymap(QStringList* problems) const {
             for (Action action : actions) {
                 for (const auto& info : allActions()) {
                     if (info.action == action) {
-                        names << tr(info.title.data());
+                        names << Translations::actionTitle(info.title.data());
                     }
                 }
             }
@@ -408,6 +421,7 @@ Settings SettingsDialog::settings() const {
     s.security.credentialStore = static_cast<CredentialStoreKind>(m_credentialStore->currentData().toInt());
     s.security.vaultLockMinutes = m_vaultLock->value();
     s.restoreWorkspace = m_restoreWorkspace->isChecked();
+    s.language = m_language->currentData().toString().toStdString();
     return s;
 }
 

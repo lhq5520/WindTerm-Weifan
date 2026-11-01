@@ -8,6 +8,7 @@
 #include "TerminalPane.h"
 #include "TerminalTab.h"
 #include "TerminalWidget.h"
+#include "Translations.h"
 
 #ifdef WT_HAVE_SSH
 #include "ssh/ForwardingDialog.h"
@@ -648,7 +649,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::createActions() {
     for (const auto& info : wt::session::allActions()) {
-        auto* qaction = new QAction(tr(info.title.data()), this);
+        auto* qaction = new QAction(Translations::actionTitle(info.title.data()), this);
         qaction->setShortcutContext(Qt::WindowShortcut);
         const Action id = info.action;
         connect(qaction, &QAction::triggered, this, [this, id] { triggerAction(id); });

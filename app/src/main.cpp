@@ -1,5 +1,6 @@
 #include "AppContext.h"
 #include "MainWindow.h"
+#include "Translations.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -73,6 +74,10 @@ int main(int argc, char* argv[]) {
     for (const QString& warning : context->warnings()) {
         std::fprintf(stderr, "warning: %s\n", qPrintable(warning));
     }
+    // WT_LANGUAGE overrides the setting (handy for screenshots and tests of translations).
+    const QString languageOverride = qEnvironmentVariable("WT_LANGUAGE");
+    Translations::install(&app, languageOverride.isEmpty() ? QString::fromStdString(context->settings().language)
+                                                           : languageOverride);
 
     MainWindow window(options, context);
     // Without an explicit command or session, reopen what was open when the app last quit.
