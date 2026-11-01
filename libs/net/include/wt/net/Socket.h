@@ -66,6 +66,16 @@ public:
     core::Status receiveSome(char* buffer, std::size_t size, std::size_t& received,
                              std::chrono::milliseconds timeout = {});
 
+    // Single non-blocking attempts for event loops (the socket should be in non-blocking mode).
+    enum class IoState { Ok, WouldBlock, Closed, Error };
+    struct IoResult {
+        IoState state = IoState::Ok;
+        std::size_t bytes = 0;
+        int error = 0; // errno / WSAGetLastError()
+    };
+    IoResult readSome(char* buffer, std::size_t size);
+    IoResult writeSome(std::string_view data);
+
 private:
     NativeSocket m_fd = kInvalidSocket;
 };
@@ -77,6 +87,9 @@ core::Status connectTcp(std::string_view host, std::uint16_t port, std::chrono::
 
 // Shuts down both directions of a descriptor owned elsewhere (thread-safe at the OS level).
 void shutdownSocket(NativeSocket socket);
+
+// Human-readable text for a socket error code (errno / WSAGetLastError()).
+std::string socketErrorText(int code);
 
 // Waits until the socket is readable (or writable); false on timeout. Negative timeout = forever.
 bool waitReadable(NativeSocket socket, std::chrono::milliseconds timeout);

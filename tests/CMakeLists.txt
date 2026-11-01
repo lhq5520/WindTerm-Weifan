@@ -20,7 +20,7 @@ wt_add_test(wt_terminal_tests
     LIBS wt::terminal
     LABELS "unit;terminal")
 
-wt_add_test(wt_net_tests SOURCES net/NetTests.cpp LIBS wt::net LABELS "integration;net")
+wt_add_test(wt_net_tests SOURCES net/NetTests.cpp net/TelnetTests.cpp LIBS wt::net LABELS "integration;net")
 wt_add_test(wt_session_tests SOURCES session/SessionTests.cpp LIBS wt::session LABELS "unit;session")
 
 if(WT_HAVE_VAULT)
@@ -38,6 +38,7 @@ if(WIN32)
 else()
     wt_add_test(wt_pty_tests SOURCES platform/PtyTests.cpp LIBS wt::platform LABELS "integration;platform")
 endif()
+wt_add_test(wt_serial_tests SOURCES platform/SerialTests.cpp LIBS wt::platform LABELS "integration;platform")
 
 # Architecture guard: the core/platform/terminal layers must stay free of Qt.
 add_test(NAME wt_qt_free_libs

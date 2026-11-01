@@ -270,6 +270,69 @@ core::Status Socket::receiveSome(char* buffer, std::size_t size, std::size_t& re
     }
 }
 
+Socket::IoResult Socket::readSome(char* buffer, std::size_t size) {
+    if (m_fd == kInvalidSocket) {
+        return {IoState::Closed, 0, 0};
+    }
+    for (;;) {
+#ifdef _WIN32
+        const int n = ::recv(static_cast<SOCKET>(m_fd), buffer, static_cast<int>(std::min<std::size_t>(size, 1 << 30)), 0);
+#else
+        const ssize_t n = ::recv(m_fd, buffer, size, 0);
+#endif
+        if (n > 0) {
+            return {IoState::Ok, static_cast<std::size_t>(n), 0};
+        }
+        if (n == 0) {
+            return {IoState::Closed, 0, 0};
+        }
+        const int code = lastError();
+#ifndef _WIN32
+        if (code == EINTR) {
+            continue;
+        }
+#endif
+        if (wouldBlock(code)) {
+            return {IoState::WouldBlock, 0, 0};
+        }
+        return {IoState::Error, 0, code};
+    }
+}
+
+Socket::IoResult Socket::writeSome(std::string_view data) {
+    if (m_fd == kInvalidSocket) {
+        return {IoState::Closed, 0, 0};
+    }
+    if (data.empty()) {
+        return {IoState::Ok, 0, 0};
+    }
+    for (;;) {
+#ifdef _WIN32
+        const int n = ::send(static_cast<SOCKET>(m_fd), data.data(),
+                             static_cast<int>(std::min<std::size_t>(data.size(), 1 << 30)), 0);
+#else
+        const ssize_t n = ::send(m_fd, data.data(), data.size(), MSG_NOSIGNAL);
+#endif
+        if (n >= 0) {
+            return {IoState::Ok, static_cast<std::size_t>(n), 0};
+        }
+        const int code = lastError();
+#ifndef _WIN32
+        if (code == EINTR) {
+            continue;
+        }
+#endif
+        if (wouldBlock(code)) {
+            return {IoState::WouldBlock, 0, 0};
+        }
+        return {IoState::Error, 0, code};
+    }
+}
+
+std::string socketErrorText(int code) {
+    return errorText(code);
+}
+
 core::Status Socket::receiveExact(char* buffer, std::size_t size, std::chrono::milliseconds timeout) {
     const bool hasDeadline = timeout.count() > 0;
     const auto deadline = Clock::now() + timeout;

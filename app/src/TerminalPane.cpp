@@ -42,7 +42,7 @@ void TerminalPane::wireSession() {
 }
 
 bool TerminalPane::isRemote() const {
-    return m_profile && m_profile->kind == wt::session::SessionKind::Ssh;
+    return m_profile && m_profile->isRemote();
 }
 
 bool TerminalPane::startLocal(const TerminalSession::Options& options) {

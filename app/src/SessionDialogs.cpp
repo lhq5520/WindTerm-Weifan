@@ -9,6 +9,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -121,6 +122,8 @@ QWidget* SessionEditDialog::createGeneralPage() {
     m_kind = new QComboBox(page);
     m_kind->setObjectName(QStringLiteral("kind"));
     m_kind->addItem(tr("SSH"), static_cast<int>(SessionKind::Ssh));
+    m_kind->addItem(tr("Telnet"), static_cast<int>(SessionKind::Telnet));
+    m_kind->addItem(tr("Serial port"), static_cast<int>(SessionKind::Serial));
     m_kind->addItem(tr("Local shell"), static_cast<int>(SessionKind::Local));
     m_kind->setCurrentIndex(m_kind->findData(static_cast<int>(m_original.kind)));
     m_theme = new QComboBox(page);
@@ -143,6 +146,8 @@ QWidget* SessionEditDialog::createGeneralPage() {
     m_kindPages = new QStackedWidget(page);
     m_kindPages->addWidget(createSshPage());
     m_kindPages->addWidget(createLocalPage());
+    m_kindPages->addWidget(createTelnetPage());
+    m_kindPages->addWidget(createSerialPage());
     layout->addWidget(m_kindPages);
     m_notes = new QPlainTextEdit(QString::fromStdString(m_original.notes), page);
     m_notes->setPlaceholderText(tr("Notes"));
@@ -236,10 +241,148 @@ QWidget* SessionEditDialog::createLocalPage() {
     return page;
 }
 
+QWidget* SessionEditDialog::createTelnetPage() {
+    auto* page = new QWidget(this);
+    auto* form = new QFormLayout(page);
+    form->setContentsMargins(0, 0, 0, 0);
+    const TelnetSettings& telnet = m_original.telnet;
+    m_telnetHost = new QLineEdit(QString::fromStdString(telnet.host), page);
+    m_telnetHost->setObjectName(QStringLiteral("telnetHost"));
+    m_telnetPort = spinBox(1, 65535, telnet.port == 0 ? 23 : telnet.port, page);
+    m_telnetPort->setObjectName(QStringLiteral("telnetPort"));
+    auto* hostRow = new QHBoxLayout;
+    hostRow->addWidget(m_telnetHost, 1);
+    hostRow->addWidget(new QLabel(tr("Port:"), page));
+    hostRow->addWidget(m_telnetPort);
+    m_terminalType = new QComboBox(page);
+    m_terminalType->setObjectName(QStringLiteral("terminalType"));
+    m_terminalType->setEditable(true);
+    m_terminalType->addItems({QStringLiteral("xterm-256color"), QStringLiteral("xterm"), QStringLiteral("vt220"),
+                              QStringLiteral("vt100"), QStringLiteral("ansi"), QStringLiteral("linux")});
+    m_terminalType->setCurrentText(telnet.terminalType.empty() ? QStringLiteral("xterm-256color")
+                                                               : QString::fromStdString(telnet.terminalType));
+    m_telnetEcho = new QComboBox(page);
+    m_telnetEcho->setObjectName(QStringLiteral("telnetEcho"));
+    m_telnetEcho->addItem(tr("Automatic (when the server does not echo)"), static_cast<int>(EchoMode::Auto));
+    m_telnetEcho->addItem(tr("Always"), static_cast<int>(EchoMode::On));
+    m_telnetEcho->addItem(tr("Never"), static_cast<int>(EchoMode::Off));
+    m_telnetEcho->setCurrentIndex(std::max(0, m_telnetEcho->findData(static_cast<int>(telnet.localEcho))));
+    m_telnetCrlf = new QCheckBox(tr("Send Enter as CR LF (otherwise CR NUL)"), page);
+    m_telnetCrlf->setChecked(telnet.crlf);
+    m_telnetTimeout = spinBox(1, 600, telnet.connectTimeoutSeconds, page);
+    m_telnetTimeout->setSuffix(tr(" s"));
+    form->addRow(tr("Host:"), hostRow);
+    form->addRow(tr("Terminal type:"), m_terminalType);
+    form->addRow(tr("Local echo:"), m_telnetEcho);
+    form->addRow(QString(), m_telnetCrlf);
+    form->addRow(tr("Connect timeout:"), m_telnetTimeout);
+    return page;
+}
+
+QWidget* SessionEditDialog::createSerialPage() {
+    auto* page = new QWidget(this);
+    auto* form = new QFormLayout(page);
+    form->setContentsMargins(0, 0, 0, 0);
+    const SerialSettings& serial = m_original.serial;
+    m_serialDevice = new QComboBox(page);
+    m_serialDevice->setObjectName(QStringLiteral("serialDevice"));
+    m_serialDevice->setEditable(true);
+    m_serialDevice->setMinimumContentsLength(18);
+    auto* refresh = new QPushButton(tr("Refresh"), page);
+    connect(refresh, &QPushButton::clicked, this, &SessionEditDialog::refreshSerialPorts);
+    auto* deviceRow = new QHBoxLayout;
+    deviceRow->addWidget(m_serialDevice, 1);
+    deviceRow->addWidget(refresh);
+    m_serialDevice->setCurrentText(QString::fromStdString(serial.line.device));
+    refreshSerialPorts();
+    if (m_original.kind == SessionKind::Serial && serial.line.device.empty() && m_serialDevice->count() > 0) {
+        m_serialDevice->setCurrentIndex(0); // a new serial session: suggest the first port
+    }
+
+    m_baudRate = new QComboBox(page);
+    m_baudRate->setObjectName(QStringLiteral("baudRate"));
+    m_baudRate->setEditable(true);
+    m_baudRate->setValidator(new QIntValidator(50, 16000000, m_baudRate));
+    for (const int rate : wt::platform::standardBaudRates()) {
+        m_baudRate->addItem(QString::number(rate));
+    }
+    m_baudRate->setCurrentText(QString::number(serial.line.baudRate));
+    m_dataBits = new QComboBox(page);
+    m_dataBits->setObjectName(QStringLiteral("dataBits"));
+    for (const int bits : {8, 7, 6, 5}) {
+        m_dataBits->addItem(QString::number(bits), bits);
+    }
+    m_dataBits->setCurrentIndex(std::max(0, m_dataBits->findData(serial.line.dataBits)));
+    m_parity = new QComboBox(page);
+    m_parity->setObjectName(QStringLiteral("parity"));
+    m_parity->addItem(tr("None"), static_cast<int>(wt::platform::Parity::None));
+    m_parity->addItem(tr("Odd"), static_cast<int>(wt::platform::Parity::Odd));
+    m_parity->addItem(tr("Even"), static_cast<int>(wt::platform::Parity::Even));
+    m_parity->addItem(tr("Mark"), static_cast<int>(wt::platform::Parity::Mark));
+    m_parity->addItem(tr("Space"), static_cast<int>(wt::platform::Parity::Space));
+    m_parity->setCurrentIndex(std::max(0, m_parity->findData(static_cast<int>(serial.line.parity))));
+    m_stopBits = new QComboBox(page);
+    m_stopBits->setObjectName(QStringLiteral("stopBits"));
+    m_stopBits->addItem(QStringLiteral("1"), static_cast<int>(wt::platform::StopBits::One));
+    m_stopBits->addItem(QStringLiteral("1.5"), static_cast<int>(wt::platform::StopBits::OneAndHalf));
+    m_stopBits->addItem(QStringLiteral("2"), static_cast<int>(wt::platform::StopBits::Two));
+    m_stopBits->setCurrentIndex(std::max(0, m_stopBits->findData(static_cast<int>(serial.line.stopBits))));
+    m_flowControl = new QComboBox(page);
+    m_flowControl->setObjectName(QStringLiteral("flowControl"));
+    m_flowControl->addItem(tr("None"), static_cast<int>(wt::platform::FlowControl::None));
+    m_flowControl->addItem(tr("XON/XOFF (software)"), static_cast<int>(wt::platform::FlowControl::XonXoff));
+    m_flowControl->addItem(tr("RTS/CTS (hardware)"), static_cast<int>(wt::platform::FlowControl::RtsCts));
+    m_flowControl->addItem(tr("DSR/DTR (hardware)"), static_cast<int>(wt::platform::FlowControl::DsrDtr));
+    m_flowControl->setCurrentIndex(
+        std::max(0, m_flowControl->findData(static_cast<int>(serial.line.flowControl))));
+    m_serialEcho = new QComboBox(page);
+    m_serialEcho->setObjectName(QStringLiteral("serialEcho"));
+    m_serialEcho->addItem(tr("Off (the device echoes)"), static_cast<int>(EchoMode::Off));
+    m_serialEcho->addItem(tr("On"), static_cast<int>(EchoMode::On));
+    m_serialEcho->setCurrentIndex(std::max(0, m_serialEcho->findData(static_cast<int>(serial.localEcho))));
+    m_serialNewline = new QComboBox(page);
+    m_serialNewline->setObjectName(QStringLiteral("serialNewline"));
+    m_serialNewline->addItem(tr("CR"), static_cast<int>(NewlineMode::Cr));
+    m_serialNewline->addItem(tr("LF"), static_cast<int>(NewlineMode::Lf));
+    m_serialNewline->addItem(tr("CR LF"), static_cast<int>(NewlineMode::CrLf));
+    m_serialNewline->setCurrentIndex(std::max(0, m_serialNewline->findData(static_cast<int>(serial.newline))));
+
+    auto* framing = new QHBoxLayout;
+    framing->addWidget(m_dataBits);
+    framing->addWidget(new QLabel(tr("Parity:"), page));
+    framing->addWidget(m_parity);
+    framing->addWidget(new QLabel(tr("Stop bits:"), page));
+    framing->addWidget(m_stopBits);
+    form->addRow(tr("Device:"), deviceRow);
+    form->addRow(tr("Baud rate:"), m_baudRate);
+    form->addRow(tr("Data bits:"), framing);
+    form->addRow(tr("Flow control:"), m_flowControl);
+    form->addRow(tr("Local echo:"), m_serialEcho);
+    form->addRow(tr("Enter sends:"), m_serialNewline);
+    return page;
+}
+
+void SessionEditDialog::refreshSerialPorts() {
+    if (!m_serialDevice) {
+        return;
+    }
+    const QString current = m_serialDevice->currentText();
+    m_serialDevice->clear();
+    for (const auto& port : wt::platform::availableSerialPorts()) {
+        const QString device = QString::fromStdString(port.device);
+        m_serialDevice->addItem(device, device);
+        if (!port.description.empty()) {
+            m_serialDevice->setItemData(m_serialDevice->count() - 1, QString::fromStdString(port.description),
+                                        Qt::ToolTipRole);
+        }
+    }
+    m_serialDevice->setCurrentText(current);
+}
+
 QWidget* SessionEditDialog::createProxyPage() {
     auto* page = new QWidget(this);
     auto* form = new QFormLayout(page);
-    const ProxySettings& proxy = m_original.ssh.proxy;
+    const ProxySettings& proxy = m_original.kind == SessionKind::Telnet ? m_original.telnet.proxy : m_original.ssh.proxy;
     m_proxyKind = new QComboBox(page);
     m_proxyKind->setObjectName(QStringLiteral("proxyKind"));
     m_proxyKind->addItem(tr("Direct connection"), static_cast<int>(ProxyKind::None));
@@ -262,8 +405,11 @@ QWidget* SessionEditDialog::createProxyPage() {
         }
     }
     m_jump->setCurrentIndex(std::max(0, m_jump->findData(QString::fromStdString(proxy.jumpProfileId))));
-    const ReconnectSettings& reconnect = m_original.ssh.reconnect;
+    const ReconnectSettings& reconnect = m_original.kind == SessionKind::Telnet   ? m_original.telnet.reconnect
+                                         : m_original.kind == SessionKind::Serial ? m_original.serial.reconnect
+                                                                                  : m_original.ssh.reconnect;
     m_reconnect = new QCheckBox(tr("Reconnect automatically when the connection drops"), page);
+    m_reconnect->setObjectName(QStringLiteral("reconnect"));
     m_reconnect->setChecked(reconnect.enabled);
     m_reconnectAttempts = spinBox(1, 1000, std::max(1, reconnect.maxAttempts), page);
 
@@ -280,17 +426,24 @@ QWidget* SessionEditDialog::createProxyPage() {
 
 void SessionEditDialog::updateVisibility() {
     const auto kind = static_cast<SessionKind>(m_kind->currentData().toInt());
-    m_kindPages->setCurrentIndex(kind == SessionKind::Ssh ? 0 : 1);
+    switch (kind) {
+    case SessionKind::Ssh: m_kindPages->setCurrentIndex(0); break;
+    case SessionKind::Local: m_kindPages->setCurrentIndex(1); break;
+    case SessionKind::Telnet: m_kindPages->setCurrentIndex(2); break;
+    case SessionKind::Serial: m_kindPages->setCurrentIndex(3); break;
+    }
     const auto proxy = static_cast<ProxyKind>(m_proxyKind->currentData().toInt());
     const bool ssh = kind == SessionKind::Ssh;
-    const bool network = ssh && (proxy == ProxyKind::Socks5 || proxy == ProxyKind::HttpConnect);
-    m_proxyKind->setEnabled(ssh);
+    const bool proxied = ssh || kind == SessionKind::Telnet;
+    const bool network = proxied && (proxy == ProxyKind::Socks5 || proxy == ProxyKind::HttpConnect);
+    m_proxyKind->setEnabled(proxied);
     m_proxyHost->setEnabled(network);
     m_proxyPort->setEnabled(network);
     m_proxyUser->setEnabled(network);
     m_jump->setEnabled(ssh && proxy == ProxyKind::JumpHost);
-    m_reconnect->setEnabled(ssh);
-    m_reconnectAttempts->setEnabled(ssh);
+    const bool remote = kind != SessionKind::Local;
+    m_reconnect->setEnabled(remote);
+    m_reconnectAttempts->setEnabled(remote);
 }
 
 SessionProfile SessionEditDialog::profile() const {
@@ -320,15 +473,62 @@ SessionProfile SessionEditDialog::profile() const {
     p.ssh.keepAliveSeconds = m_keepAlive->value();
     p.ssh.connectTimeoutSeconds = m_timeout->value();
     p.ssh.remoteCommand = m_command->text().toStdString();
-    p.ssh.proxy.kind = static_cast<ProxyKind>(m_proxyKind->currentData().toInt());
-    p.ssh.proxy.host = m_proxyHost->text().trimmed().toStdString();
-    p.ssh.proxy.port = static_cast<std::uint16_t>(m_proxyPort->value());
-    p.ssh.proxy.username = m_proxyUser->text().trimmed().toStdString();
-    p.ssh.proxy.jumpProfileId = m_jump->currentData().toString().toStdString();
-    p.ssh.reconnect.enabled = m_reconnect->isChecked();
-    p.ssh.reconnect.maxAttempts = m_reconnectAttempts->value();
+
+    if (p.kind == SessionKind::Telnet) {
+        p.telnet.host = m_telnetHost->text().trimmed().toStdString();
+        p.telnet.port = static_cast<std::uint16_t>(m_telnetPort->value());
+        p.telnet.terminalType = m_terminalType->currentText().trimmed().toStdString();
+        if (p.telnet.terminalType == "xterm-256color") {
+            p.telnet.terminalType.clear(); // the default
+        }
+        p.telnet.localEcho = static_cast<EchoMode>(m_telnetEcho->currentData().toInt());
+        p.telnet.crlf = m_telnetCrlf->isChecked();
+        p.telnet.connectTimeoutSeconds = m_telnetTimeout->value();
+    }
+    if (p.kind == SessionKind::Serial) {
+        p.serial.line.device = m_serialDevice->currentText().trimmed().toStdString();
+        p.serial.line.baudRate = m_baudRate->currentText().toInt();
+        p.serial.line.dataBits = m_dataBits->currentData().toInt();
+        p.serial.line.parity = static_cast<wt::platform::Parity>(m_parity->currentData().toInt());
+        p.serial.line.stopBits = static_cast<wt::platform::StopBits>(m_stopBits->currentData().toInt());
+        p.serial.line.flowControl = static_cast<wt::platform::FlowControl>(m_flowControl->currentData().toInt());
+        p.serial.localEcho = static_cast<EchoMode>(m_serialEcho->currentData().toInt());
+        p.serial.newline = static_cast<NewlineMode>(m_serialNewline->currentData().toInt());
+    }
+
+    // The proxy and reconnect page applies to the selected kind.
+    ProxySettings proxy;
+    proxy.kind = static_cast<ProxyKind>(m_proxyKind->currentData().toInt());
+    proxy.host = m_proxyHost->text().trimmed().toStdString();
+    proxy.port = static_cast<std::uint16_t>(m_proxyPort->value());
+    proxy.username = m_proxyUser->text().trimmed().toStdString();
+    proxy.jumpProfileId = m_jump->currentData().toString().toStdString();
+    ReconnectSettings* reconnect = &p.ssh.reconnect;
+    if (p.kind == SessionKind::Telnet) {
+        proxy.credentialId = p.telnet.proxy.credentialId;
+        if (proxy.kind == ProxyKind::JumpHost) {
+            proxy.kind = ProxyKind::None; // not available for Telnet
+        }
+        proxy.jumpProfileId.clear();
+        p.telnet.proxy = proxy;
+        reconnect = &p.telnet.reconnect;
+    } else if (p.kind == SessionKind::Serial) {
+        reconnect = &p.serial.reconnect;
+    } else if (p.kind == SessionKind::Ssh) {
+        proxy.credentialId = p.ssh.proxy.credentialId;
+        p.ssh.proxy = proxy;
+    }
+    if (p.kind != SessionKind::Local) {
+        reconnect->enabled = m_reconnect->isChecked();
+        reconnect->maxAttempts = m_reconnectAttempts->value();
+    }
     if (p.name.empty()) {
-        p.name = p.kind == SessionKind::Ssh ? p.target() : (p.local.program.empty() ? "Shell" : p.local.program);
+        switch (p.kind) {
+        case SessionKind::Ssh: p.name = p.target(); break;
+        case SessionKind::Telnet: p.name = p.telnet.host; break;
+        case SessionKind::Serial: p.name = p.serial.line.device; break;
+        case SessionKind::Local: p.name = p.local.program.empty() ? "Shell" : p.local.program; break;
+        }
     }
     return p;
 }
@@ -400,6 +600,8 @@ SessionManagerDialog::SessionManagerDialog(AppContext* context, QWidget* parent)
     QPushButton* open = addButton(tr("Open"), [this] { openSelected(); });
     open->setDefault(true);
     addButton(tr("New SSH..."), [this] { createSession(SessionKind::Ssh); });
+    addButton(tr("New Telnet..."), [this] { createSession(SessionKind::Telnet); });
+    addButton(tr("New Serial..."), [this] { createSession(SessionKind::Serial); });
     addButton(tr("New Local..."), [this] { createSession(SessionKind::Local); });
     addButton(tr("Edit..."), [this] { editSelected(); });
     addButton(tr("Duplicate"), [this] { duplicateSelected(); });
@@ -480,10 +682,20 @@ bool SessionManagerDialog::editProfile(SessionProfile profile, const QString& ti
     return true;
 }
 
+QString SessionEditDialog::titleForNew(SessionKind kind) {
+    switch (kind) {
+    case SessionKind::Ssh: return tr("New SSH Session");
+    case SessionKind::Telnet: return tr("New Telnet Session");
+    case SessionKind::Serial: return tr("New Serial Session");
+    case SessionKind::Local: break;
+    }
+    return tr("New Local Session");
+}
+
 void SessionManagerDialog::createSession(SessionKind kind) {
     SessionProfile profile;
     profile.kind = kind;
-    editProfile(profile, kind == SessionKind::Ssh ? tr("New SSH Session") : tr("New Local Session"));
+    editProfile(profile, SessionEditDialog::titleForNew(kind));
 }
 
 void SessionManagerDialog::editSelected() {

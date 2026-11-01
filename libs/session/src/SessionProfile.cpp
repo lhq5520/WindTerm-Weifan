@@ -17,7 +17,10 @@ struct EnumName {
     const char* name;
 };
 
-constexpr EnumName<SessionKind> kKinds[] = {{SessionKind::Local, "local"}, {SessionKind::Ssh, "ssh"}};
+constexpr EnumName<SessionKind> kKinds[] = {{SessionKind::Local, "local"},
+                                            {SessionKind::Ssh, "ssh"},
+                                            {SessionKind::Telnet, "telnet"},
+                                            {SessionKind::Serial, "serial"}};
 constexpr EnumName<AuthMethod> kAuthMethods[] = {{AuthMethod::Auto, "auto"},
                                                  {AuthMethod::Password, "password"},
                                                  {AuthMethod::PublicKey, "publickey"},
@@ -27,6 +30,21 @@ constexpr EnumName<ProxyKind> kProxyKinds[] = {{ProxyKind::None, "none"},
                                                {ProxyKind::Socks5, "socks5"},
                                                {ProxyKind::HttpConnect, "http"},
                                                {ProxyKind::JumpHost, "jump"}};
+
+constexpr EnumName<EchoMode> kEchoModes[] = {{EchoMode::Auto, "auto"}, {EchoMode::On, "on"}, {EchoMode::Off, "off"}};
+constexpr EnumName<NewlineMode> kNewlineModes[] = {
+    {NewlineMode::Cr, "cr"}, {NewlineMode::Lf, "lf"}, {NewlineMode::CrLf, "crlf"}};
+constexpr EnumName<platform::Parity> kParities[] = {{platform::Parity::None, "none"},
+                                                    {platform::Parity::Odd, "odd"},
+                                                    {platform::Parity::Even, "even"},
+                                                    {platform::Parity::Mark, "mark"},
+                                                    {platform::Parity::Space, "space"}};
+constexpr EnumName<platform::StopBits> kStopBits[] = {
+    {platform::StopBits::One, "1"}, {platform::StopBits::OneAndHalf, "1.5"}, {platform::StopBits::Two, "2"}};
+constexpr EnumName<platform::FlowControl> kFlowControls[] = {{platform::FlowControl::None, "none"},
+                                                             {platform::FlowControl::XonXoff, "xonxoff"},
+                                                             {platform::FlowControl::RtsCts, "rtscts"},
+                                                             {platform::FlowControl::DsrDtr, "dsrdtr"}};
 
 template <typename Enum, std::size_t N>
 const char* toName(const EnumName<Enum> (&table)[N], Enum value) {
@@ -90,11 +108,58 @@ int intFrom(const core::Json& json, int fallback, int low, int high) {
     return static_cast<int>(std::clamp<std::int64_t>(json.toInt(fallback), low, high));
 }
 
+core::Json proxyToJson(const ProxySettings& proxy) {
+    core::Json p;
+    p["kind"] = toName(kProxyKinds, proxy.kind);
+    p["host"] = proxy.host;
+    p["port"] = proxy.port;
+    p["username"] = proxy.username;
+    p["credentialId"] = proxy.credentialId;
+    p["jumpProfileId"] = proxy.jumpProfileId;
+    return p;
+}
+
+bool proxyFromJson(const core::Json& proxy, ProxySettings& out) {
+    const auto proxyKind = fromName(kProxyKinds, proxy["kind"], ProxyKind::None);
+    if (!proxyKind) {
+        return false;
+    }
+    out.kind = *proxyKind;
+    out.host = proxy["host"].toString();
+    out.port = portFrom(proxy["port"], 0);
+    out.username = proxy["username"].toString();
+    out.credentialId = proxy["credentialId"].toString();
+    out.jumpProfileId = proxy["jumpProfileId"].toString();
+    return true;
+}
+
+core::Json reconnectToJson(const ReconnectSettings& reconnect) {
+    core::Json r;
+    r["enabled"] = reconnect.enabled;
+    r["maxAttempts"] = reconnect.maxAttempts;
+    r["initialDelayMs"] = reconnect.initialDelayMs;
+    r["maxDelayMs"] = reconnect.maxDelayMs;
+    return r;
+}
+
+ReconnectSettings reconnectFromJson(const core::Json& r, const ReconnectSettings& defaults) {
+    ReconnectSettings out;
+    out.enabled = r["enabled"].toBool(defaults.enabled);
+    out.maxAttempts = intFrom(r["maxAttempts"], defaults.maxAttempts, 0, 1000);
+    out.initialDelayMs = intFrom(r["initialDelayMs"], defaults.initialDelayMs, 100, 600000);
+    out.maxDelayMs = intFrom(r["maxDelayMs"], defaults.maxDelayMs, out.initialDelayMs, 3600000);
+    return out;
+}
+
 } // namespace
 
 std::string SessionProfile::target() const {
-    if (kind == SessionKind::Local) {
-        return local.program.empty() ? std::string("(login shell)") : local.program;
+    switch (kind) {
+    case SessionKind::Local: return local.program.empty() ? std::string("(login shell)") : local.program;
+    case SessionKind::Telnet:
+        return "telnet://" + telnet.host + (telnet.port != 23 ? ":" + std::to_string(telnet.port) : std::string());
+    case SessionKind::Serial: return serial.line.device + " (" + platform::describeSerialConfig(serial.line) + ")";
+    case SessionKind::Ssh: break;
     }
     std::string text = ssh.username.empty() ? ssh.host : ssh.username + "@" + ssh.host;
     if (ssh.port != 22) {
@@ -118,6 +183,28 @@ core::Json SessionProfile::toJson() const {
         l["workingDirectory"] = local.workingDirectory;
         l["loginShell"] = local.loginShell;
         l["environment"] = envToJson(local.environment);
+    } else if (kind == SessionKind::Telnet) {
+        core::Json& t = json["telnet"];
+        t["host"] = telnet.host;
+        t["port"] = telnet.port;
+        t["terminalType"] = telnet.terminalType;
+        t["localEcho"] = toName(kEchoModes, telnet.localEcho);
+        t["crlf"] = telnet.crlf;
+        t["connectTimeoutSeconds"] = telnet.connectTimeoutSeconds;
+        t["environment"] = envToJson(telnet.environment);
+        t["proxy"] = proxyToJson(telnet.proxy);
+        t["reconnect"] = reconnectToJson(telnet.reconnect);
+    } else if (kind == SessionKind::Serial) {
+        core::Json& c = json["serial"];
+        c["device"] = serial.line.device;
+        c["baudRate"] = serial.line.baudRate;
+        c["dataBits"] = serial.line.dataBits;
+        c["parity"] = toName(kParities, serial.line.parity);
+        c["stopBits"] = toName(kStopBits, serial.line.stopBits);
+        c["flowControl"] = toName(kFlowControls, serial.line.flowControl);
+        c["localEcho"] = toName(kEchoModes, serial.localEcho);
+        c["newline"] = toName(kNewlineModes, serial.newline);
+        c["reconnect"] = reconnectToJson(serial.reconnect);
     } else {
         core::Json& s = json["ssh"];
         s["host"] = ssh.host;
@@ -130,18 +217,8 @@ core::Json SessionProfile::toJson() const {
         s["keepAliveSeconds"] = ssh.keepAliveSeconds;
         s["remoteCommand"] = ssh.remoteCommand;
         s["environment"] = envToJson(ssh.environment);
-        core::Json& p = s["proxy"];
-        p["kind"] = toName(kProxyKinds, ssh.proxy.kind);
-        p["host"] = ssh.proxy.host;
-        p["port"] = ssh.proxy.port;
-        p["username"] = ssh.proxy.username;
-        p["credentialId"] = ssh.proxy.credentialId;
-        p["jumpProfileId"] = ssh.proxy.jumpProfileId;
-        core::Json& r = s["reconnect"];
-        r["enabled"] = ssh.reconnect.enabled;
-        r["maxAttempts"] = ssh.reconnect.maxAttempts;
-        r["initialDelayMs"] = ssh.reconnect.initialDelayMs;
-        r["maxDelayMs"] = ssh.reconnect.maxDelayMs;
+        s["proxy"] = proxyToJson(ssh.proxy);
+        s["reconnect"] = reconnectToJson(ssh.reconnect);
     }
     return json;
 }
@@ -191,22 +268,46 @@ std::optional<SessionProfile> SessionProfile::fromJson(const core::Json& json, s
     p.ssh.keepAliveSeconds = intFrom(s["keepAliveSeconds"], 30, 0, 3600);
     p.ssh.remoteCommand = s["remoteCommand"].toString();
     p.ssh.environment = envFromJson(s["environment"]);
-    const core::Json& proxy = s["proxy"];
-    const auto proxyKind = fromName(kProxyKinds, proxy["kind"], ProxyKind::None);
-    if (!proxyKind) {
+    if (!proxyFromJson(s["proxy"], p.ssh.proxy)) {
         return fail("session \"" + p.name + "\": unknown proxy kind");
     }
-    p.ssh.proxy.kind = *proxyKind;
-    p.ssh.proxy.host = proxy["host"].toString();
-    p.ssh.proxy.port = portFrom(proxy["port"], 0);
-    p.ssh.proxy.username = proxy["username"].toString();
-    p.ssh.proxy.credentialId = proxy["credentialId"].toString();
-    p.ssh.proxy.jumpProfileId = proxy["jumpProfileId"].toString();
-    const core::Json& r = s["reconnect"];
-    p.ssh.reconnect.enabled = r["enabled"].toBool(true);
-    p.ssh.reconnect.maxAttempts = intFrom(r["maxAttempts"], 5, 0, 1000);
-    p.ssh.reconnect.initialDelayMs = intFrom(r["initialDelayMs"], 1000, 100, 600000);
-    p.ssh.reconnect.maxDelayMs = intFrom(r["maxDelayMs"], 30000, p.ssh.reconnect.initialDelayMs, 3600000);
+    p.ssh.reconnect = reconnectFromJson(s["reconnect"], SshSettings{}.reconnect);
+
+    const core::Json& t = json["telnet"];
+    p.telnet.host = t["host"].toString();
+    p.telnet.port = portFrom(t["port"], 23);
+    p.telnet.terminalType = t["terminalType"].toString();
+    const auto telnetEcho = fromName(kEchoModes, t["localEcho"], EchoMode::Auto);
+    if (!telnetEcho) {
+        return fail("session \"" + p.name + "\": unknown local echo mode");
+    }
+    p.telnet.localEcho = *telnetEcho;
+    p.telnet.crlf = t["crlf"].toBool(true);
+    p.telnet.connectTimeoutSeconds = intFrom(t["connectTimeoutSeconds"], 15, 1, 600);
+    p.telnet.environment = envFromJson(t["environment"]);
+    if (!proxyFromJson(t["proxy"], p.telnet.proxy)) {
+        return fail("session \"" + p.name + "\": unknown proxy kind");
+    }
+    p.telnet.reconnect = reconnectFromJson(t["reconnect"], TelnetSettings{}.reconnect);
+
+    const core::Json& c = json["serial"];
+    p.serial.line.device = c["device"].toString();
+    p.serial.line.baudRate = intFrom(c["baudRate"], 115200, 50, 16000000);
+    p.serial.line.dataBits = intFrom(c["dataBits"], 8, 5, 8);
+    const auto parity = fromName(kParities, c["parity"], platform::Parity::None);
+    const auto stopBits = fromName(kStopBits, c["stopBits"], platform::StopBits::One);
+    const auto flow = fromName(kFlowControls, c["flowControl"], platform::FlowControl::None);
+    const auto serialEcho = fromName(kEchoModes, c["localEcho"], EchoMode::Off);
+    const auto newline = fromName(kNewlineModes, c["newline"], NewlineMode::Cr);
+    if (!parity || !stopBits || !flow || !serialEcho || !newline) {
+        return fail("session \"" + p.name + "\": invalid serial settings");
+    }
+    p.serial.line.parity = *parity;
+    p.serial.line.stopBits = *stopBits;
+    p.serial.line.flowControl = *flow;
+    p.serial.localEcho = *serialEcho;
+    p.serial.newline = *newline;
+    p.serial.reconnect = reconnectFromJson(c["reconnect"], SerialSettings{}.reconnect);
     return p;
 }
 
@@ -306,6 +407,25 @@ std::vector<std::string> SessionStore::validate(const SessionProfile& profile) c
             if (const auto status = jumpChain(profile, chain); !status) {
                 problems.push_back(status.message());
             }
+        }
+    } else if (profile.kind == SessionKind::Telnet) {
+        if (profile.telnet.host.empty()) {
+            problems.emplace_back("host is empty");
+        }
+        if (profile.telnet.port == 0) {
+            problems.emplace_back("port must be between 1 and 65535");
+        }
+        const ProxySettings& proxy = profile.telnet.proxy;
+        if ((proxy.kind == ProxyKind::Socks5 || proxy.kind == ProxyKind::HttpConnect) &&
+            (proxy.host.empty() || proxy.port == 0)) {
+            problems.emplace_back("proxy host and port are required");
+        }
+        if (proxy.kind == ProxyKind::JumpHost) {
+            problems.emplace_back("Telnet sessions cannot use a jump host (use a SOCKS5 or HTTP proxy)");
+        }
+    } else if (profile.kind == SessionKind::Serial) {
+        for (auto& problem : platform::validateSerialConfig(profile.serial.line)) {
+            problems.push_back(std::move(problem));
         }
     }
     return problems;

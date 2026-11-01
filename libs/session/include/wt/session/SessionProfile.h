@@ -2,6 +2,7 @@
 
 #include "wt/core/Json.h"
 #include "wt/core/Status.h"
+#include "wt/platform/SerialPort.h"
 
 #include <cstdint>
 #include <optional>
@@ -11,9 +12,13 @@
 
 namespace wt::session {
 
-enum class SessionKind { Local, Ssh };
+enum class SessionKind { Local, Ssh, Telnet, Serial };
 enum class AuthMethod { Auto, Password, PublicKey, Agent, KeyboardInteractive };
 enum class ProxyKind { None, Socks5, HttpConnect, JumpHost };
+// Local echo of typed characters: Auto follows the Telnet ECHO option.
+enum class EchoMode { Auto, On, Off };
+// What the Enter key (CR) is sent as on a serial line.
+enum class NewlineMode { Cr, Lf, CrLf };
 
 struct ProxySettings {
     ProxyKind kind = ProxyKind::None;
@@ -62,6 +67,30 @@ struct SshSettings {
     friend bool operator==(const SshSettings&, const SshSettings&) = default;
 };
 
+struct TelnetSettings {
+    std::string host;
+    std::uint16_t port = 23;
+    std::string terminalType; // empty: xterm-256color
+    EchoMode localEcho = EchoMode::Auto;
+    bool crlf = true; // Enter is sent as CR LF (Telnet new line) instead of CR NUL
+    int connectTimeoutSeconds = 15;
+    std::vector<std::pair<std::string, std::string>> environment; // NEW-ENVIRON (USER, LANG, ...)
+    ProxySettings proxy;                                         // SOCKS5 / HTTP CONNECT only
+    ReconnectSettings reconnect{false, 5, 1000, 30000};
+
+    friend bool operator==(const TelnetSettings&, const TelnetSettings&) = default;
+};
+
+struct SerialSettings {
+    platform::SerialConfig line; // device, baud rate, data bits, parity, stop bits, flow control
+    EchoMode localEcho = EchoMode::Off;
+    NewlineMode newline = NewlineMode::Cr;
+    // Reopen the device when it disappears (USB adapters, boards that reset).
+    ReconnectSettings reconnect{true, 30, 500, 2000};
+
+    friend bool operator==(const SerialSettings&, const SerialSettings&) = default;
+};
+
 struct SessionProfile {
     std::string id;
     std::string name;
@@ -69,11 +98,15 @@ struct SessionProfile {
     SessionKind kind = SessionKind::Local;
     LocalSettings local;
     SshSettings ssh;
+    TelnetSettings telnet;
+    SerialSettings serial;
     std::string theme; // empty: application theme
     std::string notes;
 
-    // "user@host:port" for SSH, the program for local sessions.
+    // "user@host:port" for SSH, "telnet://host:port", "/dev/ttyUSB0 (115200 8N1)" or the program
+    // for local sessions.
     std::string target() const;
+    bool isRemote() const { return kind != SessionKind::Local; }
 
     core::Json toJson() const;
     static std::optional<SessionProfile> fromJson(const core::Json& json, std::string* error = nullptr);

@@ -64,7 +64,11 @@ public Q_SLOTS:
     void showSettings();
     void showSessionManager();
     void newSshSession();
+    // Asks for a new session of `kind` (SSH, Telnet, serial, local) and opens it.
+    void newSession(wt::session::SessionKind kind);
     void reconnectActive();
+    // Telnet BREAK / serial break condition on the active pane.
+    void sendBreak();
     // Shows/hides the SFTP browser for the active SSH pane.
     void setFileBrowserVisible(bool visible);
 

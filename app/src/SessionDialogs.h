@@ -33,11 +33,18 @@ public:
 
     void accept() override;
 
+    // Repopulates the serial device list (keeps the current text).
+    void refreshSerialPorts();
+    // "New SSH Session", "New Serial Session", ...
+    static QString titleForNew(wt::session::SessionKind kind);
+
 private:
     QWidget* createGeneralPage();
     QWidget* createSshPage();
     QWidget* createProxyPage();
     QWidget* createLocalPage();
+    QWidget* createTelnetPage();
+    QWidget* createSerialPage();
     void updateVisibility();
 
     AppContext* m_context; // outlives the (modal) dialog
@@ -64,6 +71,22 @@ private:
     QSpinBox* m_keepAlive = nullptr;
     QSpinBox* m_timeout = nullptr;
     QLineEdit* m_command = nullptr;
+    // telnet
+    QLineEdit* m_telnetHost = nullptr;
+    QSpinBox* m_telnetPort = nullptr;
+    QComboBox* m_terminalType = nullptr;
+    QComboBox* m_telnetEcho = nullptr;
+    QCheckBox* m_telnetCrlf = nullptr;
+    QSpinBox* m_telnetTimeout = nullptr;
+    // serial
+    QComboBox* m_serialDevice = nullptr;
+    QComboBox* m_baudRate = nullptr;
+    QComboBox* m_dataBits = nullptr;
+    QComboBox* m_parity = nullptr;
+    QComboBox* m_stopBits = nullptr;
+    QComboBox* m_flowControl = nullptr;
+    QComboBox* m_serialEcho = nullptr;
+    QComboBox* m_serialNewline = nullptr;
     // proxy / reconnect
     QComboBox* m_proxyKind = nullptr;
     QLineEdit* m_proxyHost = nullptr;

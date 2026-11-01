@@ -12,11 +12,15 @@ add_library(wt_app STATIC
     src/PtyBackend.h
     src/SearchBar.cpp
     src/SearchBar.h
+    src/SerialBackend.cpp
+    src/SerialBackend.h
     src/SessionDialogs.cpp
     src/SessionDialogs.h
     src/SettingsDialog.cpp
     src/SettingsDialog.h
     src/SessionBackend.h
+    src/TelnetBackend.cpp
+    src/TelnetBackend.h
     src/TerminalSession.cpp
     src/TerminalPane.cpp
     src/TerminalPane.h
@@ -43,7 +47,7 @@ if(WT_HAVE_VAULT)
     target_compile_definitions(wt_app PUBLIC WT_HAVE_VAULT=1)
 endif()
 target_include_directories(wt_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(wt_app PUBLIC Qt6::Widgets wt::terminal wt::platform wt::session)
+target_link_libraries(wt_app PUBLIC Qt6::Widgets wt::terminal wt::platform wt::net wt::session)
 target_compile_definitions(wt_app PUBLIC QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
 wt_configure_target(wt_app)
 

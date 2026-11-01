@@ -31,6 +31,9 @@ const std::vector<ActionInfo>& allActions() {
         {Action::Settings, "settings", "Settings..."},
         {Action::ToggleFileBrowser, "toggle-file-browser", "File Browser (SFTP)"},
         {Action::Reconnect, "reconnect", "Reconnect"},
+        {Action::NewTelnetSession, "new-telnet-session", "New Telnet Session..."},
+        {Action::NewSerialSession, "new-serial-session", "New Serial Session..."},
+        {Action::SendBreak, "send-break", "Send Break"},
     };
     return actions;
 }

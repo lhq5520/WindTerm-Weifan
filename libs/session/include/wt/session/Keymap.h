@@ -36,6 +36,9 @@ enum class Action {
     Settings,
     ToggleFileBrowser,
     Reconnect,
+    NewTelnetSession,
+    NewSerialSession,
+    SendBreak,
     Count_ // number of actions; not an action
 };
 

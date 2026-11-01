@@ -1,12 +1,20 @@
-# wt_platform: Qt-free OS abstractions (pseudo-terminals, process spawning, files).
+# wt_platform: Qt-free OS abstractions (pseudo-terminals, process spawning, serial ports, files).
 
-add_library(wt_platform STATIC include/wt/platform/Files.h include/wt/platform/Pty.h src/Files.cpp)
+add_library(wt_platform STATIC
+    include/wt/platform/Files.h
+    include/wt/platform/Pty.h
+    include/wt/platform/SerialPort.h
+    src/Files.cpp
+    src/SerialPort.cpp)
 add_library(wt::platform ALIAS wt_platform)
 
 if(WIN32)
-    target_sources(wt_platform PRIVATE src/win/ConPty.cpp)
+    target_sources(wt_platform PRIVATE src/win/ConPty.cpp src/win/WinSerialPort.cpp)
 else()
-    target_sources(wt_platform PRIVATE src/posix/PosixPty.cpp)
+    target_sources(wt_platform PRIVATE src/posix/PosixPty.cpp src/posix/PosixSerialPort.cpp)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_sources(wt_platform PRIVATE src/posix/LinuxCustomBaud.cpp)
+    endif()
     find_package(Threads REQUIRED)
     target_link_libraries(wt_platform PRIVATE Threads::Threads)
 endif()

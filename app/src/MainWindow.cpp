@@ -1,8 +1,10 @@
 #include "MainWindow.h"
 
 #include "AppContext.h"
+#include "SerialBackend.h"
 #include "SessionDialogs.h"
 #include "SettingsDialog.h"
+#include "TelnetBackend.h"
 #include "TerminalPane.h"
 #include "TerminalTab.h"
 #include "TerminalWidget.h"
@@ -201,6 +203,24 @@ bool MainWindow::startPaneProfile(TerminalPane* pane, const wt::session::Session
         return true;
     }
     pane->startProfile(profile); // records the profile (title, theme)
+    if (profile.kind == wt::session::SessionKind::Telnet || profile.kind == wt::session::SessionKind::Serial) {
+        std::unique_ptr<SessionBackend> backend;
+        if (profile.kind == wt::session::SessionKind::Telnet) {
+            std::string proxyPassword;
+            if (!profile.telnet.proxy.credentialId.empty()) {
+                proxyPassword = m_context->credential(profile.telnet.proxy.credentialId, this).value_or("");
+            }
+            backend = std::make_unique<TelnetBackend>(TelnetBackend::fromProfile(profile, proxyPassword));
+        } else {
+            backend = std::make_unique<SerialBackend>(SerialBackend::fromProfile(profile));
+        }
+        if (!pane->session()->start(std::move(backend))) {
+            m_errorString = pane->session()->errorString();
+            return false;
+        }
+        updateTitles();
+        return true;
+    }
 #ifdef WT_HAVE_SSH
     SshPlan plan;
     QString error;
@@ -259,7 +279,8 @@ TerminalPane* MainWindow::splitActive(Qt::Orientation orientation) {
     TerminalPane* pane = createPane();
     tab->split(current, orientation, pane);
     bool ok = false;
-    if (const auto* profile = current->profile(); profile && profile->kind == wt::session::SessionKind::Ssh) {
+    const auto* profile = current->profile();
+    if (profile && (profile->kind == wt::session::SessionKind::Ssh || profile->kind == wt::session::SessionKind::Telnet)) {
         ok = startPaneProfile(pane, *profile); // a second connection to the same host
     } else {
         TerminalSession::Options options;
@@ -495,6 +516,9 @@ void MainWindow::triggerAction(Action id) {
         }
         break;
     case Action::NewSshSession: newSshSession(); break;
+    case Action::NewTelnetSession: newSession(wt::session::SessionKind::Telnet); break;
+    case Action::NewSerialSession: newSession(wt::session::SessionKind::Serial); break;
+    case Action::SendBreak: sendBreak(); break;
     case Action::SessionManager: showSessionManager(); break;
     case Action::Settings: showSettings(); break;
     case Action::ToggleFileBrowser: break; // a checkable action: see setFileBrowserVisible()
@@ -507,6 +531,8 @@ void MainWindow::createMenus() {
     QMenu* file = menuBar()->addMenu(tr("&File"));
     file->addAction(action(Action::NewTab));
     file->addAction(action(Action::NewSshSession));
+    file->addAction(action(Action::NewTelnetSession));
+    file->addAction(action(Action::NewSerialSession));
     file->addAction(action(Action::SessionManager));
     file->addSeparator();
     file->addAction(action(Action::ClosePane));
@@ -547,6 +573,7 @@ void MainWindow::createMenus() {
 
     QMenu* session = menuBar()->addMenu(tr("&Session"));
     session->addAction(action(Action::Reconnect));
+    session->addAction(action(Action::SendBreak));
     session->addAction(action(Action::ToggleFileBrowser));
     session->addSeparator();
     m_sessionsMenu = session->addMenu(tr("&Open Saved Session"));
@@ -663,10 +690,28 @@ void MainWindow::showSessionManager() {
 }
 
 void MainWindow::newSshSession() {
+    newSession(wt::session::SessionKind::Ssh);
+}
+
+void MainWindow::sendBreak() {
+    TerminalPane* pane = activePane();
+    SessionBackend* backend = pane ? pane->session()->backend() : nullptr;
+    if (auto* telnet = qobject_cast<TelnetBackend*>(backend)) {
+        telnet->sendCommand(wt::net::TelnetCommand::Break);
+    } else if (auto* serial = qobject_cast<SerialBackend*>(backend)) {
+        serial->sendBreak();
+    } else {
+        statusBar()->showMessage(tr("Send Break works in Telnet and serial sessions"), 5000);
+        return;
+    }
+    statusBar()->showMessage(tr("Break sent"), 2000);
+}
+
+void MainWindow::newSession(wt::session::SessionKind kind) {
     wt::session::SessionProfile profile;
-    profile.kind = wt::session::SessionKind::Ssh;
+    profile.kind = kind;
     SessionEditDialog dialog(m_context, profile, this);
-    dialog.setWindowTitle(tr("New SSH Session"));
+    dialog.setWindowTitle(SessionEditDialog::titleForNew(kind));
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }

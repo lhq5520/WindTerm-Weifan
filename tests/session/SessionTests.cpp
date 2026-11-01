@@ -67,11 +67,14 @@ WT_TEST(themes_builtin_lookup_and_json_round_trip) {
 }
 
 WT_TEST(keymap_defaults_have_no_conflicts) {
+    // Rarely used commands are reachable from the menus only (users can bind them).
+    const std::vector<Action> menuOnly = {Action::NewTelnetSession, Action::NewSerialSession, Action::SendBreak};
     for (auto flavor : {KeymapFlavor::Standard, KeymapFlavor::Mac}) {
         const Keymap map = Keymap::defaults(flavor);
         WT_CHECK(map.conflicts().empty());
         for (const ActionInfo& info : allActions()) {
-            WT_CHECK(!map.sequences(info.action).empty());
+            const bool optional = std::find(menuOnly.begin(), menuOnly.end(), info.action) != menuOnly.end();
+            WT_CHECK(optional || !map.sequences(info.action).empty());
             WT_CHECK(actionFromId(info.id) == info.action);
             WT_CHECK_EQ(actionId(info.action), info.id);
         }
@@ -199,7 +202,7 @@ WT_TEST(session_profiles_round_trip) {
 
 WT_TEST(session_store_rejects_bad_entries) {
     std::vector<std::string> warnings;
-    auto json = core::Json::parse(R"({"sessions":[{"name":"no id"},{"id":"a","kind":"telnet"},
+    auto json = core::Json::parse(R"({"sessions":[{"name":"no id"},{"id":"a","kind":"rlogin"},
         {"id":"b","name":"ok","kind":"ssh","ssh":{"host":"h","port":99999,"auth":"agent"}},
         {"id":"b","name":"dup"}]})");
     const SessionStore store = SessionStore::fromJson(*json, &warnings);
@@ -308,4 +311,85 @@ WT_TEST(backoff_grows_caps_and_stops) {
     WT_CHECK_EQ(jittered.next()->count(), 800);
     settings.enabled = false;
     WT_CHECK(!Backoff(settings).next());
+}
+
+WT_TEST(session_telnet_and_serial_profiles_round_trip) {
+    SessionStore store;
+    SessionProfile telnet;
+    telnet.name = "router";
+    telnet.kind = SessionKind::Telnet;
+    telnet.telnet.host = "192.0.2.1";
+    telnet.telnet.port = 2323;
+    telnet.telnet.terminalType = "vt100";
+    telnet.telnet.localEcho = EchoMode::On;
+    telnet.telnet.crlf = false;
+    telnet.telnet.environment = {{"USER", "admin"}};
+    telnet.telnet.proxy.kind = ProxyKind::Socks5;
+    telnet.telnet.proxy.host = "127.0.0.1";
+    telnet.telnet.proxy.port = 1080;
+    telnet.telnet.reconnect.enabled = true;
+    const std::string telnetId = store.upsert(telnet);
+    WT_CHECK_EQ(store.find(telnetId)->target(), std::string("telnet://192.0.2.1:2323"));
+    WT_CHECK(store.validate(*store.find(telnetId)).empty());
+
+    SessionProfile serial;
+    serial.name = "board";
+    serial.kind = SessionKind::Serial;
+    serial.serial.line.device = "/dev/ttyUSB0";
+    serial.serial.line.baudRate = 9600;
+    serial.serial.line.dataBits = 7;
+    serial.serial.line.parity = platform::Parity::Even;
+    serial.serial.line.stopBits = platform::StopBits::Two;
+    serial.serial.line.flowControl = platform::FlowControl::RtsCts;
+    serial.serial.localEcho = EchoMode::On;
+    serial.serial.newline = NewlineMode::CrLf;
+    serial.serial.reconnect.enabled = false;
+    const std::string serialId = store.upsert(serial);
+    WT_CHECK_EQ(store.find(serialId)->target(), std::string("/dev/ttyUSB0 (9600 7E2 RTS/CTS)"));
+    WT_CHECK(store.find(serialId)->isRemote());
+    WT_CHECK(store.validate(*store.find(serialId)).empty());
+
+    std::vector<std::string> warnings;
+    const SessionStore loaded = SessionStore::fromJson(*core::Json::parse(store.toJson().dump()), &warnings);
+    WT_CHECK(warnings.empty());
+    WT_REQUIRE(loaded.profiles().size() == 2u);
+    WT_CHECK(loaded.profiles()[0] == store.profiles()[0]);
+    WT_CHECK(loaded.profiles()[1] == store.profiles()[1]);
+
+    // Defaults: telnet port 23, no auto-reconnect; serial 115200 8N1 with auto-reopen.
+    auto json = core::Json::parse(R"({"sessions":[{"id":"t","name":"t","kind":"telnet","telnet":{"host":"h"}},
+        {"id":"s","name":"s","kind":"serial","serial":{"device":"COM3"}},
+        {"id":"x","name":"x","kind":"serial","serial":{"device":"COM4","parity":"sideways"}}]})");
+    warnings.clear();
+    const SessionStore defaults = SessionStore::fromJson(*json, &warnings);
+    WT_CHECK_EQ(warnings.size(), std::size_t(1)); // unknown parity
+    WT_REQUIRE(defaults.profiles().size() == 2u);
+    WT_CHECK_EQ(defaults.profiles()[0].telnet.port, std::uint16_t(23));
+    WT_CHECK(!defaults.profiles()[0].telnet.reconnect.enabled);
+    WT_CHECK(defaults.profiles()[0].telnet.localEcho == EchoMode::Auto);
+    WT_CHECK_EQ(defaults.profiles()[1].serial.line.baudRate, 115200);
+    WT_CHECK_EQ(platform::describeSerialConfig(defaults.profiles()[1].serial.line), std::string("115200 8N1"));
+    WT_CHECK(defaults.profiles()[1].serial.reconnect.enabled);
+}
+
+WT_TEST(session_telnet_and_serial_validation) {
+    SessionStore store;
+    SessionProfile telnet;
+    telnet.name = "t";
+    telnet.kind = SessionKind::Telnet;
+    WT_CHECK(!store.validate(telnet).empty()); // no host
+    telnet.telnet.host = "h";
+    WT_CHECK(store.validate(telnet).empty());
+    telnet.telnet.proxy.kind = ProxyKind::JumpHost;
+    WT_CHECK(!store.validate(telnet).empty()); // not supported for telnet
+    telnet.telnet.proxy.kind = ProxyKind::HttpConnect;
+    WT_CHECK(!store.validate(telnet).empty()); // proxy without host
+    SessionProfile serial;
+    serial.name = "s";
+    serial.kind = SessionKind::Serial;
+    WT_CHECK(!store.validate(serial).empty()); // no device
+    serial.serial.line.device = "/dev/ttyACM0";
+    WT_CHECK(store.validate(serial).empty());
+    serial.serial.line.dataBits = 9;
+    WT_CHECK(!store.validate(serial).empty());
 }
