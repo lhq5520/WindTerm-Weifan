@@ -1,6 +1,6 @@
 # Roadmap
 
-Status as of 2026-10-25. "Verified" means covered by automated tests on Linux x86_64 unless noted.
+Status as of 2026-11-01. "Verified" means covered by automated tests on Linux x86_64 unless noted.
 
 ## Phase 0: foundation (done)
 
@@ -72,8 +72,10 @@ Status as of 2026-10-25. "Verified" means covered by automated tests on Linux x8
 
 ### Remaining external verification (cannot be done on the Linux build machine)
 
-- [ ] **macOS on Apple Silicon:** build, run the test suite and use the app on a real M-series Mac
-      (or the `macos-14` CI runner); check IME, Option/Command handling, Retina rendering.
+- [ ] **macOS on Apple Silicon:** the build before Phase 7 was confirmed to run on an M-series
+      Mac. Phase 7 adds macOS-specific code (Keychain store, `IOSSIOSPEED` serial speeds) that has
+      not been compiled there yet: build, run the test suite and try the new features; check IME,
+      Option/Command handling, Retina rendering.
 - [ ] **macOS signing and notarization:** needs a Developer ID certificate and a notarytool
       profile; run `tools/package/package-macos.sh` with `WT_CODESIGN_IDENTITY` and
       `WT_NOTARY_PROFILE`, then test the DMG on a second Mac (Gatekeeper).
@@ -81,31 +83,71 @@ Status as of 2026-10-25. "Verified" means covered by automated tests on Linux x8
       compile-checked with mingw-w64), test the app, sign with signtool.
 - [ ] **First CI run on GitHub** (the workflow has never executed; actions versions and runner
       images may need adjustments).
-- [ ] Distribution packages on other distributions (Fedora/Arch package metadata, Flatpak).
+- [ ] **Distribution packages:** `packaging/` has an RPM spec, a PKGBUILD and a Flatpak manifest,
+      and the AppStream metainfo validates, but none of them has been built with `rpmbuild`,
+      `makepkg` or `flatpak-builder` yet (not available on the build machine).
+- [ ] **Platform code written without the platform:** the macOS Keychain store, the Windows
+      Credential Manager store, Windows serial ports and the Windows OpenSSH agent pipe (agent
+      forwarding, security keys) are compile-checked at most (mingw-w64 for Windows; the macOS
+      parts not at all) and need a run on the real system.
 
-## Not implemented yet
+## Phase 7: remaining enhancements (done)
 
-- [ ] Telnet and serial sessions (port of `src/Protocols/TelnetProtocol`)
-- [ ] Session logging, triggers, auto-completion, broadcast input
-- [ ] Port forwarding UI (local/remote/dynamic); X11 and agent forwarding
-- [ ] SSH certificates, FIDO2/sk keys, GSSAPI
-- [ ] Vault auto-lock timeout, OS keychain integration (macOS Keychain, Windows Credential Manager,
-      Secret Service)
-- [ ] Kitty keyboard flags 2/4/16 (key release events, alternate keys, associated text)
-- [ ] Emoji ZWJ sequences rendered as one glyph (widths follow wcwidth, so a ZWJ sequence occupies
-      the sum of its parts, matching what shells compute)
-- [ ] Glyph atlas / GPU rendering; benchmark-driven tuning (`benchmark/urandom_test.sh`)
-- [ ] Sixel / kitty graphics protocol
-- [ ] Restoring the window layout and open sessions on restart
-- [ ] Translations
+- [x] **Telnet** sessions: RFC 854 with RFC 1143 option negotiation, NAWS (window size), TTYPE,
+      TSPEED, NEW-ENVIRON, binary mode, local echo automatic/on/off, CR LF or CR NUL newlines,
+      SOCKS5/HTTP proxies
+- [x] **Serial** sessions: standard and custom baud rates, data bits, parity, stop bits, RTS/CTS and
+      XON/XOFF flow control, BREAK, exclusive access, reopening a device that was unplugged
+      (POSIX verified with pseudo-terminals; the Windows backend is compile-checked)
+- [x] **SSH forwarding:** local, remote and dynamic (SOCKS4/4a/5) port forwards saved in the
+      profile and editable while connected (*Session ▸ Port Forwarding*); agent forwarding; X11
+      forwarding with a fake MIT-MAGIC-COOKIE-1 that is replaced by the real one for the local
+      display
+- [x] **SSH authentication:** OpenSSH user certificates (`<key>-cert.pub` is picked up
+      automatically); FIDO/U2F security keys (`sk-ssh-ed25519`, `sk-ecdsa-sha2-nistp256`) held by
+      ssh-agent — libssh2 drops their flags and counter, so these signatures are requested from the
+      agent directly
+- [x] **Session logging** (plain text with optional timestamps, or raw; file name patterns;
+      per session or automatic), **triggers** (highlight, notify, beep, send/auto-answer),
+      **command completion** from the shell history, **input broadcasting** to the panes of a tab or
+      to all tabs
+- [x] **Credentials:** the vault locks itself after inactivity (default 30 minutes); passwords can
+      go to the system store instead (macOS Keychain, Windows Credential Manager, Secret Service)
+- [x] **Session restore:** window layout, tabs, splits and their sessions come back on start
+- [x] **Translations:** Simplified Chinese (all 412 strings), language setting and `WT_LANGUAGE`
+- [x] **Kitty keyboard flags 2/4/16** (event types, alternate keys, associated text) and keypad keys
+      with their KP_* codes
+- [x] **Grapheme clusters** as one character (mode 2027): emoji ZWJ sequences, flags, VS16
+- [x] **Graphics:** Sixel (VT340 palette, HLS/RGB, raster attributes, DECSDM, XTSMGRAPHICS) and the
+      kitty graphics protocol (direct transmission, RGB/RGBA/PNG, chunks, zlib, placements with
+      source rectangles, scaling, offsets and z-index, deletion, queries)
+- [x] **SFTP:** whole folders upload and download
+- [x] **Reflow:** the DECSC saved cursor follows its text
+- [x] **Packaging:** RPM spec, PKGBUILD, Flatpak manifest, AppStream metainfo; inside Flatpak local
+      shells run on the host through `flatpak-spawn --host`
+
+## Not implemented
+
+- [ ] GSSAPI/Kerberos authentication: libssh2 has no GSSAPI support.
+- [ ] Security keys without an agent (talking to the authenticator needs libfido2): add the key to
+      ssh-agent (`ssh-add ~/.ssh/id_ed25519_sk`).
+- [ ] Glyph atlas / GPU rendering (painting uses QPainter with Qt's glyph cache);
+      benchmark-driven tuning with `benchmark/urandom_test.sh`.
+- [ ] Kitty graphics: animation, Unicode placeholders, and file / shared-memory transmission (the
+      last on purpose: a remote program could otherwise display local files).
+- [ ] Translations other than Simplified Chinese.
 
 ## Known limitations
 
-- Saved cursors (DECSC) other than the one used by `?1049` are clamped, not reflowed.
 - When a reflow makes the text below the cursor taller than the screen, the lines that no longer
   fit below the screen are dropped (the cursor line stays visible), as in most terminals.
 - Kitty keyboard protocol: shifted symbols are reported with the shifted code point (the keyboard
-  layout's base key is not known); keypad keys use legacy encodings.
+  layout's base key is not known); keypad cursor keys (NumLock off) are reported as ordinary
+  cursor keys, because macOS marks the main arrow keys as keypad keys too.
 - Block selections and selections on the alternate screen are dropped on resize.
-- The SFTP panel transfers files, not whole directories (deleting directories is recursive).
+- Images (Sixel and kitty) are removed when the number of columns changes, since the text they
+  belong to is rewrapped. Kitty images with a negative z-index are drawn below the text and also
+  below non-default cell backgrounds.
+- Command completion learns only commands that the shell echoed; input typed at prompts that do
+  not echo (passwords) is never recorded.
 - The AppImage needs the host's graphics libraries (libEGL/libGL), like any AppImage.

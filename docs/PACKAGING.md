@@ -19,6 +19,30 @@ tools/package/package-linux.sh --appimage  # additionally an AppImage via linuxd
   systems provide. It runs without FUSE when `APPIMAGE_EXTRACT_AND_RUN=1` is set.
 * Verified on Ubuntu 24.04 x86_64: tarball, .deb and AppImage were produced; the AppImage starts,
   runs a shell and exits cleanly (headless, with the host's EGL library available).
+* The install also contains AppStream metadata (`share/metainfo/dev.weifan.windterm.metainfo.xml`,
+  validated with `appstreamcli validate`) for software centres.
+
+### Fedora, Arch and Flatpak
+
+Recipes for distribution packages live in `packaging/`:
+
+| File | Build with |
+|---|---|
+| `packaging/rpm/windterm-weifan.spec` | `spectool -g -R windterm-weifan.spec && rpmbuild -ba windterm-weifan.spec` (Fedora 40+: Qt 6, OpenSSL 3.2) |
+| `packaging/arch/PKGBUILD` | `makepkg -si` in that directory (`updpkgsums` after a version bump) |
+| `packaging/flatpak/dev.weifan.windterm.yml` | `flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/dev.weifan.windterm.yml` |
+
+The RPM and Arch recipes build a release tag (`v<version>`), run the test suite (GUI tests
+offscreen; the SSH tests start a private `sshd`) and install the same files as `cmake --install`.
+The Flatpak uses the KDE 6.8 runtime, builds libssh2 1.11.1 as a module and grants network, home
+directory, SSH agent, serial devices, the Secret Service and `org.freedesktop.Flatpak` (local
+shells run on the host through `flatpak-spawn --host`; `WT_FLATPAK_SANDBOX_SHELL=1` keeps them in
+the sandbox). The application id `dev.weifan.windterm` matches the macOS bundle identifier; a
+Flathub submission needs an id under a domain or code-hosting account you control.
+
+**Not yet verified:** none of the three has been built yet — `rpmbuild`, `makepkg` and
+`flatpak-builder` are not available on the build machine. The file lists match what
+`cmake --install` produces (checked with a staged install).
 
 ## macOS (Apple Silicon)
 

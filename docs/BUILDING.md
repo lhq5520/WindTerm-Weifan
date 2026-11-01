@@ -6,10 +6,13 @@
 |---|---|---|
 | CMake + Ninja | CMake ≥ 3.21 | everything |
 | C++20 compiler | Apple Clang 14+ (Xcode 14+), Clang 15+, GCC 11+, MSVC 2022 | everything |
-| Qt | ≥ 6.5 (Core, Gui, Widgets; Test for GUI tests) | the application (`WT_BUILD_APP`) |
+| Qt | ≥ 6.5 (Core, Gui, Widgets; DBus on Linux/BSD; Test for GUI tests) | the application (`WT_BUILD_APP`) |
+| Qt LinguistTools | same as Qt (optional) | the Chinese translation (without it the app is English only) |
 | libssh2 | ≥ 1.10 (OpenSSL backend) | SSH sessions and SFTP (`WT_ENABLE_SSH`) |
 | OpenSSL ≥ 3.2 **or** libsodium ≥ 1.0.18 | | encrypted credential vault (`WT_ENABLE_VAULT`) |
+| zlib | any (optional) | zlib-compressed kitty graphics (`o=z`) |
 | OpenSSH server/client binaries | any recent | only to run the SSH integration tests (they start an unprivileged `sshd`) |
+| `dbus-daemon`, `xauth` | any (optional) | the Secret Service and X11 forwarding tests (skipped without them) |
 
 Optional features are detected automatically: without libssh2 the app builds without SSH/SFTP,
 without a crypto backend it builds without the vault. Force them with `-DWT_ENABLE_SSH=ON` /
@@ -85,8 +88,14 @@ characters unless *Use Option as Meta key* is enabled in the settings.
 Debian/Ubuntu:
 
 ```sh
-sudo apt install cmake ninja-build g++ libssh2-1-dev libsodium-dev openssh-server openssh-client
+sudo apt install cmake ninja-build g++ libssh2-1-dev libsodium-dev zlib1g-dev \
+    openssh-server openssh-client dbus-daemon xauth
 ```
+
+Fedora: `sudo dnf install cmake ninja-build gcc-c++ qt6-qtbase-devel qt6-qttools-devel libssh2-devel
+openssl-devel zlib-devel openssh-server dbus-daemon`; Arch: `sudo pacman -S cmake ninja qt6-base
+qt6-tools libssh2 openssl zlib openssh`. Package recipes for both and for Flatpak are in
+`packaging/` ([PACKAGING.md](PACKAGING.md)).
 
 Qt: `qt6-base-dev` provides Qt 6.6+ on Ubuntu 24.10 / Debian 13 and later. Ubuntu 24.04 ships Qt
 6.4, which is below the minimum: use the Qt online installer, `aqtinstall` or Homebrew on Linux and
@@ -118,14 +127,19 @@ Windows tests needs Windows (see the CI workflow).
 | Test | Kind | Covers |
 |---|---|---|
 | `wt_core_tests` | unit | UTF-8, character width, Status, base64/hex, JSON |
-| `wt_terminal_tests` | unit | VT parser, terminal model, DCS/OSC 8/52, SGR, kitty keyboard, modifyOtherKeys, damage tracking, reflow (incl. selections), search, randomized stress test |
-| `wt_session_tests` | unit | themes, key bindings, settings, session profiles/store, jump chains, backoff, atomic files |
+| `wt_terminal_tests` | unit | VT parser, terminal model, DCS/OSC 8/52/133, SGR, kitty keyboard (all flags, keypad), modifyOtherKeys, grapheme clusters (2027), damage tracking, reflow (incl. selections and DECSC), search, Sixel, kitty graphics, randomized stress tests |
+| `wt_session_tests` | unit | themes, key bindings, settings, session profiles/store, jump chains, backoff, atomic files, session logs, command history, workspace state |
 | `wt_security_tests` | unit | Argon2id (RFC 9106), ChaCha20-Poly1305 (RFC 8439), vault round trip, tampering, re-keying, cross-backend fixture |
-| `wt_net_tests` | integration | TCP connect/timeout/cancel, SOCKS5 (with auth), HTTP CONNECT, socket pairs |
-| `wt_pty_tests` | integration | POSIX: real child processes on a PTY; Windows: ConPTY |
-| `wt_ssh_tests` | integration | real `sshd`: host keys (unknown/changed/saved), passphrases, agent, password failure, shell + resize + exit status, SFTP, jump host, proxies, connection loss, abort |
-| `wt_app_tests` | GUI | session ↔ PTY ↔ widget: rendering, input, mouse, selection, window lifetime |
+| `wt_net_tests` | integration | TCP connect/timeout/cancel, SOCKS5 (with auth), HTTP CONNECT, socket pairs, Telnet negotiation, SOCKS server |
+| `wt_pty_tests` | integration | POSIX: real child processes on a PTY, Flatpak host commands; Windows: ConPTY |
+| `wt_serial_tests` | integration | serial line settings, BREAK, exclusive access (on a pseudo-terminal pair) |
+| `wt_ssh_tests` | integration | real `sshd`: host keys (unknown/changed/saved), passphrases, agent, certificates, security keys (software authenticator in a test agent), password failure, shell + resize + exit status, SFTP (incl. folder trees), jump host, proxies, connection loss, abort |
+| `wt_ssh_forwarding_tests` | integration | real `sshd`: local, remote and dynamic forwards, agent forwarding, X11 forwarding (cookie rewriting) |
+| `wt_app_tests` | GUI | session ↔ PTY ↔ widget: rendering, input, mouse, selection, images, window lifetime |
 | `wt_workspace_tests` | GUI | tabs, splits, search bar, themes, key bindings, zoom, links, OSC 52, settings persistence, dialogs |
+| `wt_protocol_app_tests` | GUI | Telnet and serial sessions end to end (local Telnet server, PTY pair) |
+| `wt_feature_tests` | GUI | session logs, triggers, completion, broadcasting, kitty key events, Chinese translation |
+| `wt_credential_tests` | GUI | system credential store (fake Secret Service on a private D-Bus), vault idle lock, workspace restore |
 | `wt_ssh_app_tests` | GUI | SSH profiles end to end, host key rejection, vault-stored passphrase, automatic reconnect, jump host, SFTP panel |
 | `wt_qt_free_libs` | lint | `libs/**` contains no Qt dependency |
 

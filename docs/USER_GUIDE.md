@@ -48,6 +48,10 @@ Default shortcuts (change them in *Settings ▸ Keyboard*; on macOS "⌘" is Com
 Also available: Shift+PgUp/PgDown/Home/End scroll the history, Shift+Insert / Ctrl+Insert paste
 and copy (Linux/Windows), middle click pastes the primary selection (X11).
 
+These commands have no default shortcut (assign one in *Settings ▸ Keyboard*): *New Telnet
+Session*, *New Serial Session* (File menu), *Send Break*, *Port Forwarding*, *Log Session to File*,
+*Broadcast Input to All Panes of the Tab* and *Broadcast Input to All Tabs* (Session menu).
+
 ## Selection, links and the clipboard
 
 * Drag to select, double-click for a word, triple-click for a line, Alt+drag for a block,
@@ -90,6 +94,19 @@ Key bindings are stored as overrides of the defaults, e.g.
 opens them directly, and `--profile <id>` from the command line.
 
 **Local sessions:** program, arguments, working directory, login shell, environment variables.
+In the Flatpak build local sessions run on the host (`flatpak-spawn --host`), so your own shell and
+tools are used; set `WT_FLATPAK_SANDBOX_SHELL=1` to keep them inside the sandbox.
+
+**Telnet sessions:** host, port (23), terminal type (default `xterm-256color`), local echo
+(*Automatic* follows the server's ECHO option), whether Enter is sent as CR LF or CR NUL,
+environment variables sent with NEW-ENVIRON (e.g. `USER`), connect timeout and a SOCKS5 / HTTP
+CONNECT proxy. The window size is reported with NAWS.
+
+**Serial sessions:** device (`/dev/ttyUSB0`, `/dev/cu.usbserial-*`, `COM3`), baud rate (any rate the
+driver accepts, including non-standard ones), data bits, parity, stop bits, flow control
+(none, XON/XOFF, RTS/CTS, DSR/DTR), local echo and what Enter sends (CR, LF or CR LF). The device is
+opened exclusively and reopened automatically when a USB adapter is unplugged and plugged in again.
+*Session ▸ Send Break* sends a BREAK (also on Telnet).
 
 **SSH sessions:**
 
@@ -98,6 +115,11 @@ opens them directly, and `--profile <id>` from the command line.
 * Authentication: *Automatic*, password, public key (identity file; encrypted keys are
   supported), SSH agent (`SSH_AUTH_SOCK`, Pageant/OpenSSH agent on Windows) or
   keyboard-interactive.
+* **Certificates:** an OpenSSH user certificate next to the key (`id_ed25519-cert.pub`) is used
+  automatically; another file can be set as *Certificate*.
+* **Security keys** (FIDO/U2F, `sk-ssh-ed25519` / `sk-ecdsa`): add the key to ssh-agent
+  (`ssh-add ~/.ssh/id_ed25519_sk`) and use agent authentication; the terminal asks you to touch the
+  key while logging in.
 * Password / passphrase: either asked for when connecting, or stored in the **credential vault**
   ("Store in the encrypted credential vault"). The vault is created with a master password the
   first time it is needed and asked for once per run. See [SECURITY.md](SECURITY.md).
@@ -113,8 +135,104 @@ opens them directly, and `--profile <id>` from the command line.
 
 *Session ▸ File Browser (SFTP)* opens a panel for the active SSH pane. It uses its own connection
 with the credentials that already worked for the terminal. You can browse (double-click folders,
-type a path), upload (button, or drop files from your file manager), download, create folders,
-rename and delete (folders recursively). Transfers show progress and can be cancelled.
+type a path), upload (button, or drop files and folders from your file manager), download files
+and whole folders, create folders, rename and delete (folders recursively). Transfers show
+progress and can be cancelled.
+
+## Port forwarding, agent and X11 forwarding
+
+The *Forwarding* tab of an SSH session holds its port forwards; *Session ▸ Port Forwarding* shows
+the forwards of the active connection with their state and lets you add or remove forwards while
+connected.
+
+| Kind | Listens on | Connects to |
+|---|---|---|
+| Local (`-L`) | this computer (default `127.0.0.1`) | a host and port as seen from the server |
+| Remote (`-R`) | the server (default `localhost` there) | a host and port as seen from this computer |
+| Dynamic (`-D`) | this computer, as a SOCKS4/4a/5 proxy | wherever the client asks, through the server |
+
+Use `*` as the bind address to listen on all interfaces (other computers can then use the forward).
+*Forward the SSH agent* lets programs on the server use your local agent; *Forward X11* shows
+remote X11 programs on your display (`$DISPLAY`, or the display set in the session). Both give the
+server's administrators access to what they forward: enable them only for hosts you trust.
+
+## Session logs
+
+*Session ▸ Log Session to File* starts or stops logging the active pane;
+*Settings ▸ Logging & Triggers ▸ Log every session from its start* logs all sessions. Logs go to
+`Documents/WindTerm-Weifan/Logs` unless another folder is set. The file name pattern understands
+`%Y %m %d %H %M %S` (date and time), `%N` (session name), `%h` (host) and `%%`; the default is
+`%Y-%m-%d_%H-%M-%S_%N.log`. *Plain text* logs contain the text as it appeared (lines rewritten with
+CR or backspaces are logged in their final form), optionally with the time at the start of every
+line; *Raw* logs contain everything received, escape sequences included (replay them with `cat`).
+
+## Triggers
+
+Triggers (*Settings ▸ Logging & Triggers*) run a regular expression (PCRE syntax) over every line
+of output, including the line being written, so prompts can trigger them. Actions:
+
+* **Highlight** the match with a foreground and/or background colour;
+* **Notify**: the trigger's text (or the line) appears in the status bar, the tab is marked and a
+  window in the background asks for attention (taskbar);
+* **Beep**;
+* **Send** text back, e.g. to answer a prompt (`\r`, `\n`, `\t`, `\e` and `\\` escapes).
+
+A trigger fires at most once per line. In `settings.json`:
+
+```json
+"triggers": [
+  { "name": "errors", "pattern": "\\b(error|failed)\\b", "action": "highlight", "foreground": "#ffffff", "background": "#aa0000" },
+  { "name": "continue", "pattern": "Continue\\? \\[y/N\\]", "action": "send", "text": "y\\r" }
+]
+```
+
+Do not put passwords into *Send* triggers: `settings.json` is not encrypted.
+
+## Command completion
+
+While you type at a shell prompt, commands from your history that start with the typed text are
+suggested once at least two characters are typed (*Settings ▸ Logging & Triggers ▸ Completion*).
+Up/Down choose a suggestion, Right, Enter or Tab insert it, Esc closes the list. The history is
+learned from commands you run (`<config>/history.json`, shared by all sessions, with the commands
+of the same session suggested first); only commands the
+shell echoed are recorded, so input typed at password prompts never is. Prompts marked with OSC 133
+(shell integration of fish, zsh/bash plugins) are recognised exactly; otherwise the typing is
+tracked from the keys pressed.
+
+## Broadcasting input
+
+*Session ▸ Broadcast Input to All Panes of the Tab* sends what you type in the active pane to every
+pane of the tab as well; *… to All Tabs* to every pane of the window. Typing, pasting and completion
+are broadcast; the status bar shows that broadcasting is on.
+
+## Images
+
+Programs can show images in the terminal with **Sixel** (`img2sixel`, `chafa -f sixels`, `lsix`,
+gnuplot's sixel terminal) or the **kitty graphics protocol** (`kitten icat`, `timg`, `chafa -f kitty`,
+yazi, ranger). Images scroll with the text and scale with the font. Kitty images must be sent
+directly in the escape sequence (`t=d`, what tools use over SSH); requests to read local files or
+shared memory are refused, as are animations.
+
+## Credentials and the vault
+
+*Settings ▸ SSH & Security ▸ Remember passwords in* chooses between the encrypted vault (one master
+password) and the system keychain (macOS Keychain, Windows Credential Manager, or the Secret
+Service — GNOME Keyring, KWallet — on Linux). The vault locks itself after 30 minutes without use
+(*Lock the vault when idle for*, or *Never*) and asks for the master password again when a secret
+is needed.
+
+## Restoring the window layout
+
+On exit the window, its tabs, the split layout and the session of every pane are saved to
+`<config>/workspace.json` and reopened on the next start (local panes in their last working
+directory; SSH, Telnet and serial panes reconnect). Turn this off with *Settings ▸ SSH & Security ▸
+Reopen the last windows, tabs and sessions on start*, or start with a command/`--profile`, which
+opens just that.
+
+## Language
+
+*Settings ▸ Appearance ▸ Language* switches between English and Simplified Chinese (or the system
+language) after a restart. `WT_LANGUAGE=zh_CN` (or `en`) overrides it for one run.
 
 ## Settings reference (`settings.json`)
 
@@ -132,3 +250,13 @@ rename and delete (folders recursively). Transfers show progress and can be canc
 | `knownHostsFile` | `~/.ssh/known_hosts` | host key store |
 | `keybindings` | {} | overrides of the default shortcuts |
 | `customThemes` | [] | additional themes |
+| `logging.autoStart` | false | log every session from its start |
+| `logging.directory` | `Documents/WindTerm-Weifan/Logs` | log folder |
+| `logging.fileName` | `%Y-%m-%d_%H-%M-%S_%N.log` | log file name pattern |
+| `logging.format` / `timestamps` | `text` / true | `text` or `raw`; time at the start of text lines |
+| `triggers` | [] | trigger rules (see above) |
+| `completion.enabled` / `minimumPrefix` | true / 2 | command suggestions from the history |
+| `security.credentialStore` | `vault` | `vault` or `system` |
+| `security.vaultLockMinutes` | 30 | lock the vault after this many idle minutes (0 = never) |
+| `restoreWorkspace` | true | reopen the last windows, tabs and sessions |
+| `language` | "" (system) | `en` or `zh_CN` |
