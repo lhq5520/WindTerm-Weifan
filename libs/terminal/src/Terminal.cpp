@@ -213,6 +213,7 @@ void Terminal::feed(std::string_view bytes) {
 void Terminal::reset() {
     clearSelection();
     m_shellMarks = {};
+    m_images.clear();
     m_attributes = {};
     m_primary.assign(static_cast<std::size_t>(m_rows), blankLine());
     m_alternate.assign(static_cast<std::size_t>(m_rows), blankLine());
@@ -338,6 +339,9 @@ void Terminal::resize(int rows, int columns) {
                                m_selection.mode != SelectionMode::Block && columns != m_columns;
     if (!keepSelection) {
         clearSelection();
+    }
+    if (columns != m_columns) {
+        m_images.clear(); // reflow renumbers the rows the images are anchored to
     }
 
     // A pending wrap (cursor parked on the last column after printing there) must survive the
@@ -1111,7 +1115,115 @@ void Terminal::switchScreen(bool alternate, bool clear) {
     if (alternate && clear) {
         eraseLines(0, m_rows);
     }
+    // The alternate screen's images do not survive it.
+    m_images.erase(std::remove_if(m_images.begin(), m_images.end(), [](const Image& image) { return image.alternate; }),
+                   m_images.end());
     m_pendingWrap = false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sixel images
+
+std::vector<const Terminal::Image*> Terminal::visibleImages() const {
+    std::vector<const Image*> images;
+    const bool alternate = isAlternateScreen();
+    for (const Image& image : m_images) {
+        if (image.alternate == alternate) {
+            images.push_back(&image);
+        }
+    }
+    return images;
+}
+
+void Terminal::placeSixel(const CsiParams& params, std::string_view data) {
+    SixelOptions options;
+    options.transparentBackground = params.raw(1) == 1; // P2: 1 = leave unset pixels transparent
+    options.background = 0xFF000000u | m_palette.background;
+    auto bitmap = decodeSixel(data, options);
+    if (!bitmap) {
+        return;
+    }
+    const int cellWidth = m_cellPixelWidth > 0 ? m_cellPixelWidth : 10;
+    const int cellHeight = m_cellPixelHeight > 0 ? m_cellPixelHeight : 20;
+    Image image;
+    image.id = m_nextImageId++;
+    image.columns = std::min(m_columns, (bitmap->width + cellWidth - 1) / cellWidth);
+    image.rows = (bitmap->height + cellHeight - 1) / cellHeight;
+    image.bitmap = std::make_shared<const Bitmap>(std::move(*bitmap));
+    image.cellWidth = cellWidth;
+    image.cellHeight = cellHeight;
+    image.alternate = isAlternateScreen();
+    if (m_modes.sixelDisplayMode) {
+        // DECSDM: the image goes to the top-left corner and the cursor stays where it is.
+        image.row = screenStart();
+        image.column = 0;
+    } else {
+        // Sixel scrolling: the image starts at the cursor, which ends up on the line below it
+        // (scrolling the screen as needed), in the image's first column.
+        if (m_pendingWrap) {
+            m_pendingWrap = false;
+        }
+        image.row = screenStart() + m_cursor.row;
+        image.column = std::min(m_cursor.column, std::max(0, m_columns - image.columns));
+        for (int i = 0; i < image.rows; ++i) {
+            lineFeed();
+        }
+        m_cursor.column = image.column;
+    }
+    m_images.push_back(std::move(image));
+    pruneImages();
+    markFullDamage();
+}
+
+void Terminal::pruneImages() {
+    constexpr std::size_t kMaxImages = 512;
+    constexpr std::size_t kMaxPixels = 64u * 1024 * 1024; // 256 MB of RGBA
+    const std::int64_t oldest = historyStart();
+    m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
+                                  [oldest](const Image& image) { return image.row + image.rows <= oldest; }),
+                   m_images.end());
+    std::size_t pixels = 0;
+    for (const Image& image : m_images) {
+        pixels += image.bitmap->pixels.size();
+    }
+    while (!m_images.empty() && (m_images.size() > kMaxImages || pixels > kMaxPixels)) {
+        pixels -= m_images.front().bitmap->pixels.size(); // the oldest goes first
+        m_images.erase(m_images.begin());
+    }
+}
+
+void Terminal::eraseImages(std::int64_t firstRow, std::int64_t lastRow) {
+    const bool alternate = isAlternateScreen();
+    const auto before = m_images.size();
+    m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
+                                  [&](const Image& image) {
+                                      return image.alternate == alternate && image.row <= lastRow &&
+                                             image.row + image.rows - 1 >= firstRow;
+                                  }),
+                   m_images.end());
+    if (m_images.size() != before) {
+        markFullDamage();
+    }
+}
+
+void Terminal::graphicsAttributes(const CsiParams& params) {
+    // XTSMGRAPHICS: CSI ? Pi ; Pa ; Pv S. Pi 1 = colour registers, 2 = sixel geometry; Pa 1 =
+    // read, 4 = read the maximum. Settings are not changeable: they are reported back unchanged.
+    const int item = params.raw(0);
+    const int action = params.raw(1);
+    if (item == 1) {
+        respond(action >= 1 && action <= 4 ? "\x1b[?1;0;256S" : "\x1b[?1;2S");
+    } else if (item == 2) {
+        const int cellWidth = m_cellPixelWidth > 0 ? m_cellPixelWidth : 10;
+        const int cellHeight = m_cellPixelHeight > 0 ? m_cellPixelHeight : 20;
+        const bool maximum = action == 4;
+        const int width = maximum ? 4096 : std::min(4096, m_columns * cellWidth);
+        const int height = maximum ? 4096 : std::min(4096, m_rows * cellHeight);
+        respond(action >= 1 && action <= 4 ? "\x1b[?2;0;" + std::to_string(width) + ";" + std::to_string(height) + "S"
+                                           : "\x1b[?2;2S");
+    } else {
+        respond("\x1b[?" + std::to_string(item) + ";1S"); // unknown item
+    }
 }
 
 void Terminal::respond(std::string_view bytes) {
@@ -1612,6 +1724,8 @@ void Terminal::dcsDispatch(const CsiParams& params, char prefix, std::string_vie
         requestStatusString(data);
     } else if (intermediates == "+" && final == 'q') {
         requestTermcap(data);
+    } else if (intermediates.empty() && final == 'q') {
+        placeSixel(params, data);
     }
 }
 
@@ -1840,6 +1954,13 @@ void Terminal::csiDispatch(const CsiParams& params, char prefix, std::string_vie
         case 3: clearScrollback(); break;
         default: break;
         }
+        switch (params.raw(0)) { // images in the erased area go too
+        case 0: eraseImages(screenStart() + m_cursor.row, screenStart() + m_rows - 1); break;
+        case 1: eraseImages(screenStart(), screenStart() + m_cursor.row); break;
+        case 2: eraseImages(screenStart(), screenStart() + m_rows - 1); break;
+        case 3: eraseImages(historyStart(), screenStart() - 1); break;
+        default: break;
+        }
         m_pendingWrap = false;
         break;
     case 'K': // EL
@@ -1884,7 +2005,7 @@ void Terminal::csiDispatch(const CsiParams& params, char prefix, std::string_vie
         break;
     case 'c': // DA
         if (params.raw(0) == 0) {
-            respond("\x1b[?62;22c"); // VT220 with ANSI colour
+            respond("\x1b[?62;4;22c"); // VT220 with sixel graphics and ANSI colour
         }
         break;
     case 'd': setCursorOriginRelative(n - 1, m_cursor.column); break; // VPA
@@ -1997,6 +2118,7 @@ int Terminal::privateModeState(int mode) const {
     case 2004: return state(m_modes.bracketedPaste);
     case 2026: return state(m_modes.synchronizedOutput);
     case 2027: return state(m_modes.graphemeClusters);
+    case 80: return state(m_modes.sixelDisplayMode);
     default: return 0;
     }
 }
@@ -2022,6 +2144,7 @@ void Terminal::dispatchPrivateCsi(const CsiParams& params, std::string_view inte
         csiDispatch(params, 0, {}, final);
         break;
     case 'u': kittyKeyboard('?', params); break; // kitty keyboard flags query
+    case 'S': graphicsAttributes(params); break; // XTSMGRAPHICS
     case 'n':
         if (params.raw(0) == 6) { // DECXCPR
             const int row = m_cursor.row - (m_modes.originMode ? m_scrollTop : 0);
@@ -2081,6 +2204,7 @@ void Terminal::setPrivateMode(int mode, bool enabled) {
     case 1015: setEncoding(MouseEncoding::Urxvt); break;
     case 2026: m_modes.synchronizedOutput = enabled; break;
     case 2027: m_modes.graphemeClusters = enabled; break;
+    case 80: m_modes.sixelDisplayMode = enabled; break;
     case 47:
         switchScreen(enabled, false);
         break;

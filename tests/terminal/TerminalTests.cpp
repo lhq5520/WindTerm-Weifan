@@ -274,7 +274,7 @@ WT_TEST(terminal_device_responses) {
     WT_CHECK_EQ(responses, std::string(CSI "5;10R"));
     responses.clear();
     t.feed(CSI "c" CSI ">c" CSI "5n" CSI "18t");
-    WT_CHECK_EQ(responses, std::string(CSI "?62;22c" CSI ">1;10;0c" CSI "0n" CSI "8;24;80t"));
+    WT_CHECK_EQ(responses, std::string(CSI "?62;4;22c" CSI ">1;10;0c" CSI "0n" CSI "8;24;80t")); // 4: sixel
 }
 
 WT_TEST(terminal_title_and_bell) {

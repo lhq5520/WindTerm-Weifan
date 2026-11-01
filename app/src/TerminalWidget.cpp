@@ -587,11 +587,41 @@ void TerminalWidget::paintEvent(QPaintEvent* event) {
         drawLine(painter, *line, 0, top + row, selection, highlights);
         painter.restore();
     }
+    drawImages(painter, top, firstRow, lastRow);
     drawCursor(painter);
     if (m_flashTimer.isActive()) {
         QColor flash = fromRgb(palette.foreground);
         flash.setAlpha(60);
         painter.fillRect(viewport()->rect(), flash);
+    }
+}
+
+void TerminalWidget::drawImages(QPainter& painter, std::int64_t top, int firstRow, int lastRow) const {
+    const auto images = m_session->terminal().visibleImages();
+    // Forget images the terminal dropped.
+    for (auto it = m_imageCache.begin(); it != m_imageCache.end();) {
+        const bool alive = std::any_of(images.begin(), images.end(), [&](const auto* image) { return image->id == it.key(); });
+        it = alive ? std::next(it) : m_imageCache.erase(it);
+    }
+    for (const Terminal::Image* image : images) {
+        const std::int64_t first = image->row - top; // viewport row of the top edge
+        if (first + image->rows <= firstRow || first > lastRow) {
+            continue;
+        }
+        auto cached = m_imageCache.find(image->id);
+        if (cached == m_imageCache.end()) {
+            const Bitmap& bitmap = *image->bitmap;
+            const QImage view(reinterpret_cast<const uchar*>(bitmap.pixels.data()), bitmap.width, bitmap.height,
+                              bitmap.width * 4, QImage::Format_ARGB32);
+            // A converted (deep) copy: premultiplied is what QPainter blends fastest.
+            cached = m_imageCache.insert(image->id, view.convertToFormat(QImage::Format_ARGB32_Premultiplied));
+        }
+        // Scale with the font (the image was laid out for the cell size at that time).
+        const double sx = static_cast<double>(m_cellWidth) / image->cellWidth;
+        const double sy = static_cast<double>(m_cellHeight) / image->cellHeight;
+        const QRectF target(image->column * m_cellWidth, static_cast<double>(first * m_cellHeight),
+                            image->bitmap->width * sx, image->bitmap->height * sy);
+        painter.drawImage(target, *cached);
     }
 }
 

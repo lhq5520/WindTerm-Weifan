@@ -16,7 +16,7 @@ endfunction()
 wt_add_test(wt_core_tests SOURCES core/CoreTests.cpp core/JsonTests.cpp LIBS wt::core LABELS "unit;core")
 wt_add_test(wt_terminal_tests
     SOURCES terminal/VtParserTests.cpp terminal/TerminalTests.cpp terminal/SelectionTests.cpp
-            terminal/ReflowTests.cpp terminal/ProtocolTests.cpp
+            terminal/ReflowTests.cpp terminal/ProtocolTests.cpp terminal/SixelTests.cpp
     LIBS wt::terminal
     LABELS "unit;terminal")
 

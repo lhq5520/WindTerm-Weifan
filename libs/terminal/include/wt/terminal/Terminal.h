@@ -2,12 +2,14 @@
 
 #include "wt/terminal/Cell.h"
 #include "wt/terminal/Selection.h"
+#include "wt/terminal/Sixel.h"
 #include "wt/terminal/VtParser.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,6 +43,7 @@ struct TerminalModes {
     bool alternateScroll = true;        // ?1007: wheel sends cursor keys on the alternate screen
     bool synchronizedOutput = false;    // ?2026: the view should hold repaints until reset
     bool graphemeClusters = false;      // ?2027: emoji ZWJ sequences, flags, skin tones are one cell pair
+    bool sixelDisplayMode = false;      // ?80 DECSDM: sixel images at the top-left, no scrolling
     int modifyOtherKeys = 0;            // XTMODKEYS (CSI > 4 ; n m): 0, 1 or 2
     MouseTracking mouseTracking = MouseTracking::None;
     MouseEncoding mouseEncoding = MouseEncoding::Default;
@@ -133,6 +136,24 @@ public:
     // trimmed: what the user typed after a prompt.
     std::string textFrom(GridPoint start) const;
 
+    // Sixel images (DCS q), anchored to absolute rows so they scroll with the text. Images on
+    // the alternate screen go away with it; erasing the display, resizing to another width and
+    // RIS remove them, and they are dropped once they scrolled out of the history.
+    struct Image {
+        std::uint64_t id = 0;
+        std::shared_ptr<const Bitmap> bitmap;
+        std::int64_t row = 0; // absolute row of the top edge
+        int column = 0;
+        int columns = 0; // cells covered
+        int rows = 0;
+        int cellWidth = 0;  // cell size in pixels when it was placed (for scaling on zoom)
+        int cellHeight = 0;
+        bool alternate = false;
+    };
+    // Images of the screen that is shown (primary or alternate).
+    std::vector<const Image*> visibleImages() const;
+    std::size_t imageCount() const { return m_images.size(); }
+
     // Colours (OSC 4/10/11/12 may change them at runtime; RIS and OSC 104/110-112 restore the
     // defaults set here).
     const ColorPalette& palette() const { return m_palette; }
@@ -215,6 +236,11 @@ private:
     void appendCombining(char32_t mark);
     // Mode 2027: adds `cp` to the previous grapheme cluster when it continues it; true if it did.
     bool joinCluster(char32_t cp);
+    void placeSixel(const CsiParams& params, std::string_view data);
+    // Drops images outside the history / on the given screen rows.
+    void pruneImages();
+    void eraseImages(std::int64_t firstRow, std::int64_t lastRow);
+    void graphicsAttributes(const CsiParams& params); // XTSMGRAPHICS
     // Mode 2027: makes the just-printed narrow cell at `col` two cells wide (emoji presentation).
     void widenCell(int col);
     std::optional<std::uint32_t> internCluster(const std::u32string& text);
@@ -271,6 +297,8 @@ private:
     std::vector<std::string> m_titleStack; // XTWINOPS 22/23
     std::string m_workingDirectory;
     ShellMarks m_shellMarks;
+    std::vector<Image> m_images;
+    std::uint64_t m_nextImageId = 1;
     std::uint64_t m_revision = 0;
 
     CursorShape m_defaultCursorShape = CursorShape::Block;

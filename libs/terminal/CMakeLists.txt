@@ -6,12 +6,14 @@ add_library(wt_terminal STATIC
     include/wt/terminal/MouseEncoder.h
     include/wt/terminal/Search.h
     include/wt/terminal/Selection.h
+    include/wt/terminal/Sixel.h
     include/wt/terminal/Terminal.h
     include/wt/terminal/VtParser.h
     src/KeyEncoder.cpp
     src/MouseEncoder.cpp
     src/Palette.cpp
     src/Search.cpp
+    src/Sixel.cpp
     src/Terminal.cpp
     src/VtParser.cpp)
 add_library(wt::terminal ALIAS wt_terminal)

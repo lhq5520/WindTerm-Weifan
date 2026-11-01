@@ -281,6 +281,29 @@ private Q_SLOTS:
         session.terminate();
     }
 
+    void sixelImageIsPaintedAndErased() {
+        TerminalSession session;
+        TerminalWidget widget;
+        // A 40 x 42 pixel red sixel image at the top-left, then a marker; later ED 2 removes it.
+        QVERIFY(session.start(shellOptions(QStringLiteral(
+            "printf '\\033Pq#1;2;100;0;0#1!40~-!40~-!40~-!40~-!40~-!40~-!40~\\033\\\\ok'; read x; "
+            "printf '\\033[2Jgone'; sleep 5"))));
+        widget.setSession(&session);
+        widget.resize(widget.sizeForGrid(10, 40));
+        widget.show();
+        QTRY_VERIFY_WITH_TIMEOUT(screenContains(session, "ok"), 5000);
+        QCOMPARE(session.terminal().imageCount(), std::size_t(1));
+        QImage image = widget.viewport()->grab().toImage();
+        const QPoint probe = QPoint(6, 6) * image.devicePixelRatio();
+        QCOMPARE(image.pixelColor(probe), QColor(0xFF, 0, 0));
+        session.sendInput("\r");
+        QTRY_VERIFY_WITH_TIMEOUT(screenContains(session, "gone"), 5000);
+        QCOMPARE(session.terminal().imageCount(), std::size_t(0));
+        image = widget.viewport()->grab().toImage();
+        QVERIFY(image.pixelColor(probe) != QColor(0xFF, 0, 0));
+        session.terminate();
+    }
+
     void closedOutputDoesNotBlockAndHangsUpChild() {
         TerminalSession session;
         QSignalSpy finished(&session, &TerminalSession::finished);

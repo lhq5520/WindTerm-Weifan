@@ -15,6 +15,8 @@
 #include <QColor>
 #include <QElapsedTimer>
 #include <QFont>
+#include <QHash>
+#include <QImage>
 #include <QPointer>
 #include <QTimer>
 #include <QUrl>
@@ -181,6 +183,7 @@ private:
     void drawDecorations(QPainter& painter, const wt::terminal::CellAttributes& attr, const QRect& rect,
                          const QColor& foreground) const;
     void drawCursor(QPainter& painter) const;
+    void drawImages(QPainter& painter, std::int64_t top, int firstRow, int lastRow) const;
     std::vector<RowHighlight> searchHighlightsForRow(std::int64_t absoluteRow) const;
 
     // User input (keys, IME, paste): command tracking, completion, then the session.
@@ -238,6 +241,7 @@ private:
     std::vector<wt::terminal::SearchMatch> m_searchMatches;
     int m_currentMatch = -1;
     std::vector<CompiledTrigger> m_highlightRules;
+    mutable QHash<quint64, QImage> m_imageCache; // sixel images converted for painting
 
     // Command line tracking and completion
     wt::session::InputLineTracker m_inputLine;

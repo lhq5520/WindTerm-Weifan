@@ -298,7 +298,9 @@ void VtParser::advance(char32_t cp) {
         if (cp == 0x7F) {
             return;
         }
-        if (m_dcs.size() < kMaxDcsLength) {
+        // Sixel images (DCS ... q) are much larger than other device control strings.
+        if (m_dcs.size() < (m_dcsFinal == 'q' && m_intermediates.empty() && m_prefix == 0 ? kMaxSixelLength
+                                                                                           : kMaxDcsLength)) {
             core::appendUtf8(m_dcs, cp);
         } else {
             m_dcsOverflow = true;

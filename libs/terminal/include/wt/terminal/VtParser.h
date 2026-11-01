@@ -82,6 +82,7 @@ class VtParser {
 public:
     static constexpr std::size_t kMaxOscLength = 64 * 1024;
     static constexpr std::size_t kMaxDcsLength = 64 * 1024;
+    static constexpr std::size_t kMaxSixelLength = 32 * 1024 * 1024;
     static constexpr std::size_t kMaxIntermediates = 2;
 
     explicit VtParser(VtHandler& handler) : m_handler(handler) {}
