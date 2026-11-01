@@ -53,6 +53,27 @@ WT_TEST(reflow_wider_joins_wrapped_lines) {
     WT_CHECK_EQ(t.lineText(1), std::string("xyZ"));
 }
 
+WT_TEST(reflow_moves_the_decsc_cursor_with_its_text) {
+    Terminal t(4, 10);
+    // Save the cursor after "0123456" (column 7 of the first line), then go elsewhere.
+    t.feed("0123456789abc\r\nxy" CSI "1;8H" "\x1b" "7" CSI "4;1H");
+    // "01234" (now history) / "56789" / "abc" / "xy" / "": the saved spot is row 0, column 2.
+    t.resize(4, 5);
+    t.feed("\x1b" "8" "#");
+    WT_CHECK_EQ(t.lineText(0), std::string("56#89"));
+    // Save again (after '#', on the '8'); growing back joins the lines and the cursor follows.
+    t.feed("\x1b" "7" CSI "4;1H");
+    t.resize(4, 20);
+    t.feed("\x1b" "8" "!");
+    WT_CHECK_EQ(t.lineText(0), std::string("0123456#!9abc"));
+    // Fewer rows push lines into the scrollback; the saved row moves up with them.
+    Terminal s(4, 10);
+    s.feed("a\r\nb\r\nc\r\nd" CSI "3;1H" "\x1b" "7" CSI "4;2H");
+    s.resize(2, 10); // "a" and "b" go to the scrollback
+    s.feed("\x1b" "8" "X");
+    WT_CHECK_EQ(s.lineText(0), std::string("X"));
+}
+
 WT_TEST(reflow_round_trip_preserves_text_and_attributes) {
     Terminal t(3, 8);
     t.feed(CSI "31mredred" CSI "0m-plain-text");

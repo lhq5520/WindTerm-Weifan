@@ -358,11 +358,20 @@ void Terminal::resize(int rows, int columns) {
         primaryRow = m_saved[0] ? m_saved[0]->row : m_rows - 1;
         primaryColumn = m_saved[0] ? m_saved[0]->column : 0;
     }
+    // A cursor saved with DECSC on the primary screen follows its text like the live one (in
+    // absolute rows, which also covers lines moving to and from the scrollback).
+    std::optional<GridPoint> savedPoint;
+    if (!alternate && m_saved[0]) {
+        savedPoint = GridPoint{screenStart() + m_saved[0]->row, m_saved[0]->column};
+    }
 
     if (columns != m_columns) {
         std::vector<GridPoint*> tracked;
         if (keepSelection) {
             tracked = {&m_selection.anchor, &m_selection.extent};
+        }
+        if (savedPoint) {
+            tracked.push_back(&*savedPoint);
         }
         reflowPrimary(rows, columns, primaryRow, primaryColumn, std::move(tracked));
         if (keepSelection && (m_selection.anchor.row < m_droppedLines || m_selection.extent.row < m_droppedLines)) {
@@ -410,6 +419,10 @@ void Terminal::resize(int rows, int columns) {
     } else {
         m_cursor.row = primaryRow;
         m_cursor.column = primaryColumn;
+    }
+    if (savedPoint) {
+        m_saved[0]->row = static_cast<int>(std::clamp<std::int64_t>(savedPoint->row - screenStart(), -1, rows));
+        m_saved[0]->column = savedPoint->column; // both clamped below
     }
 
     const int oldColumns = static_cast<int>(m_tabStops.size());
