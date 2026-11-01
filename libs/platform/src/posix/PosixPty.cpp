@@ -231,7 +231,7 @@ struct ChildSetup {
         ::signal(sig, SIG_DFL);
     }
     sigset_t empty;
-    ::sigemptyset(&empty);
+    sigemptyset(&empty);
     ::sigprocmask(SIG_SETMASK, &empty, nullptr);
 
     if (::setsid() < 0) {
@@ -417,7 +417,7 @@ Status PosixPty::start(const PtyOptions& options) {
     // Block signals across fork() so no parent handler runs in the child before it resets them.
     sigset_t all;
     sigset_t previous;
-    ::sigfillset(&all);
+    sigfillset(&all);
     ::pthread_sigmask(SIG_SETMASK, &all, &previous);
     const pid_t pid = ::fork();
     if (pid == 0) {

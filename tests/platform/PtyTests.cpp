@@ -226,8 +226,8 @@ WT_TEST(pty_child_gets_default_signal_dispositions) {
     ::sigaction(SIGINT, &ignore, &previous);
     sigset_t blocked;
     sigset_t oldMask;
-    ::sigemptyset(&blocked);
-    ::sigaddset(&blocked, SIGTERM);
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGTERM);
     ::pthread_sigmask(SIG_BLOCK, &blocked, &oldMask);
 
     auto pty = createPty();
