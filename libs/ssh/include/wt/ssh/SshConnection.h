@@ -62,8 +62,28 @@ public:
     void setBlocking(bool blocking);
     bool isAlive() const;
 
-    // Opens a session channel with a PTY running a shell (or options.command). Blocking.
-    LIBSSH2_CHANNEL* openShellChannel(const ShellOptions& options, std::string* error);
+    // What openShellChannel() set up besides the shell.
+    struct ShellExtras {
+        bool agentForwarding = false;
+        bool x11Forwarding = false;
+        std::string x11FakeCookie; // raw bytes given to the server
+        std::vector<std::string> warnings; // forwarding requests the server refused
+    };
+    // Opens a session channel with a PTY running a shell (or options.command), requesting agent
+    // and X11 forwarding first when options.forwarding asks for them. Blocking.
+    LIBSSH2_CHANNEL* openShellChannel(const ShellOptions& options, std::string* error, ShellExtras* extras = nullptr);
+
+    // Channels the server opens towards us (X11 connections, agent requests) once forwarding was
+    // requested. Filled by libssh2 callbacks while the session is being serviced; collected by the
+    // thread that services it.
+    struct IncomingChannel {
+        enum class Type { X11, Agent };
+        Type type = Type::X11;
+        LIBSSH2_CHANNEL* channel = nullptr;
+        std::string originHost;
+        int originPort = 0;
+    };
+    std::vector<IncomingChannel> takeIncomingChannels();
     // Runs a command without a PTY and collects its output (for tests and small helpers).
     core::Status execute(const std::string& command, std::string& output, int& exitStatus);
     // direct-tcpip channel to host:port as seen from the server (used for jump hosts).
@@ -98,6 +118,9 @@ private:
     SshInteraction* m_ui = nullptr;
     bool m_kbdCancelled = false;
     int m_kbdRound = 0;
+
+    friend struct IncomingChannelCallbacks;
+    std::vector<IncomingChannel> m_incoming;
 };
 
 // Formats libssh2's last error for a session.

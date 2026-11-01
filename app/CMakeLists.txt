@@ -6,6 +6,8 @@ set(CMAKE_AUTOMOC ON)
 add_library(wt_app STATIC
     src/AppContext.cpp
     src/AppContext.h
+    src/ForwardEditDialog.cpp
+    src/ForwardEditDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/PtyBackend.cpp
@@ -31,6 +33,8 @@ add_library(wt_app STATIC
     src/TerminalWidget.h)
 if(WT_HAVE_SSH)
     target_sources(wt_app PRIVATE
+        src/ssh/ForwardingDialog.cpp
+        src/ssh/ForwardingDialog.h
         src/ssh/GuiInteraction.cpp
         src/ssh/GuiInteraction.h
         src/ssh/SftpPanel.cpp

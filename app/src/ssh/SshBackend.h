@@ -31,6 +31,9 @@ struct SshPlan {
                             SshPlan& plan, QString* error);
 };
 
+// Saved port forward -> what the SSH layer runs.
+wt::ssh::PortForward toSshForward(const wt::session::PortForwardSettings& forward);
+
 // Connects every hop of `plan` in turn on the calling thread; records the secrets that worked in
 // `plan` (so reconnects and SFTP do not ask again).
 std::shared_ptr<wt::ssh::SshConnection> connectPlan(SshPlan& plan, wt::ssh::SshInteraction& ui, std::string* error,
@@ -63,8 +66,17 @@ public:
     SshPlan currentPlan() const { return m_plan; }
     int reconnectAttempts() const { return m_backoff.attempts(); }
 
+    // Port forwards of the live connection (empty while disconnected). Forwards added here are
+    // also re-established after reconnects; ids are only valid for the current connection.
+    std::vector<wt::ssh::ForwardStatus> forwards() const;
+    int addForward(const wt::ssh::PortForward& forward);
+    void removeForward(int id);
+    bool agentForwardingActive() const;
+    bool x11ForwardingActive() const;
+
 Q_SIGNALS:
     void stateChanged(SshBackend::State state);
+    void forwardsChanged();
 
 private:
     struct Attempt;

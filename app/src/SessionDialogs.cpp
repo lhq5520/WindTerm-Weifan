@@ -1,6 +1,7 @@
 #include "SessionDialogs.h"
 
 #include "AppContext.h"
+#include "ForwardEditDialog.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -89,6 +90,7 @@ SessionEditDialog::SessionEditDialog(AppContext* context, const SessionProfile& 
     auto* pages = new QTabWidget(this);
     pages->addTab(createGeneralPage(), tr("General"));
     pages->addTab(createProxyPage(), tr("Proxy && Reconnect"));
+    pages->addTab(createForwardingPage(), tr("Forwarding"));
     layout->addWidget(pages);
     if (profile.id.empty()) {
         m_saveToList = new QCheckBox(tr("Save in the session list"), this);
@@ -362,6 +364,98 @@ QWidget* SessionEditDialog::createSerialPage() {
     return page;
 }
 
+QWidget* SessionEditDialog::createForwardingPage() {
+    m_forwardingPage = new QWidget(this);
+    auto* layout = new QVBoxLayout(m_forwardingPage);
+    m_forwards = m_original.ssh.forwards;
+    m_forwardList = new QTreeWidget(m_forwardingPage);
+    m_forwardList->setObjectName(QStringLiteral("forwardList"));
+    m_forwardList->setRootIsDecorated(false);
+    m_forwardList->setHeaderLabels({tr("Type"), tr("Listen"), tr("Destination"), tr("Description")});
+    connect(m_forwardList, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem* item) { editForward(m_forwardList->indexOfTopLevelItem(item)); });
+    connect(m_forwardList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
+        const int index = m_forwardList->indexOfTopLevelItem(item);
+        if (column == 0 && index >= 0 && index < static_cast<int>(m_forwards.size())) {
+            m_forwards[static_cast<std::size_t>(index)].enabled = item->checkState(0) == Qt::Checked;
+        }
+    });
+    layout->addWidget(m_forwardList, 1);
+    auto* buttons = new QHBoxLayout;
+    auto* add = new QPushButton(tr("Add..."), m_forwardingPage);
+    add->setObjectName(QStringLiteral("addForward"));
+    auto* edit = new QPushButton(tr("Edit..."), m_forwardingPage);
+    auto* remove = new QPushButton(tr("Remove"), m_forwardingPage);
+    remove->setObjectName(QStringLiteral("removeForward"));
+    connect(add, &QPushButton::clicked, this, [this] { editForward(-1); });
+    connect(edit, &QPushButton::clicked, this,
+            [this] { editForward(m_forwardList->indexOfTopLevelItem(m_forwardList->currentItem())); });
+    connect(remove, &QPushButton::clicked, this, [this] {
+        const int index = m_forwardList->indexOfTopLevelItem(m_forwardList->currentItem());
+        if (index >= 0 && index < static_cast<int>(m_forwards.size())) {
+            m_forwards.erase(m_forwards.begin() + index);
+            reloadForwards();
+        }
+    });
+    buttons->addWidget(add);
+    buttons->addWidget(edit);
+    buttons->addWidget(remove);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
+
+    m_forwardAgent = new QCheckBox(tr("Forward the SSH agent (only for servers you trust)"), m_forwardingPage);
+    m_forwardAgent->setObjectName(QStringLiteral("forwardAgent"));
+    m_forwardAgent->setChecked(m_original.ssh.forwardAgent);
+    m_forwardX11 = new QCheckBox(tr("Forward X11 connections"), m_forwardingPage);
+    m_forwardX11->setObjectName(QStringLiteral("forwardX11"));
+    m_forwardX11->setChecked(m_original.ssh.forwardX11);
+    m_x11Display = new QLineEdit(QString::fromStdString(m_original.ssh.x11Display), m_forwardingPage);
+    m_x11Display->setObjectName(QStringLiteral("x11Display"));
+    m_x11Display->setPlaceholderText(tr("$DISPLAY"));
+    auto* x11Row = new QHBoxLayout;
+    x11Row->addWidget(m_forwardX11);
+    x11Row->addWidget(new QLabel(tr("Display:"), m_forwardingPage));
+    x11Row->addWidget(m_x11Display, 1);
+    layout->addWidget(m_forwardAgent);
+    layout->addLayout(x11Row);
+    reloadForwards();
+    return m_forwardingPage;
+}
+
+void SessionEditDialog::reloadForwards() {
+    const QSignalBlocker blocker(m_forwardList);
+    m_forwardList->clear();
+    for (const auto& forward : m_forwards) {
+        const QString listen = QString::fromStdString(
+            (forward.bindAddress.empty() ? std::string() : forward.bindAddress + ":") + std::to_string(forward.bindPort));
+        const QString target = forward.kind == ForwardKind::Dynamic
+                                   ? tr("(SOCKS)")
+                                   : QString::fromStdString(forward.targetHost + ":" + std::to_string(forward.targetPort));
+        auto* item = new QTreeWidgetItem(m_forwardList, {ForwardEditDialog::kindName(forward.kind), listen, target,
+                                                         QString::fromStdString(forward.description)});
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, forward.enabled ? Qt::Checked : Qt::Unchecked);
+    }
+}
+
+void SessionEditDialog::editForward(int index) {
+    const bool adding = index < 0 || index >= static_cast<int>(m_forwards.size());
+    PortForwardSettings initial;
+    if (!adding) {
+        initial = m_forwards[static_cast<std::size_t>(index)];
+    }
+    ForwardEditDialog dialog(initial, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    if (adding) {
+        m_forwards.push_back(dialog.forward());
+    } else {
+        m_forwards[static_cast<std::size_t>(index)] = dialog.forward();
+    }
+    reloadForwards();
+}
+
 void SessionEditDialog::refreshSerialPorts() {
     if (!m_serialDevice) {
         return;
@@ -444,6 +538,7 @@ void SessionEditDialog::updateVisibility() {
     const bool remote = kind != SessionKind::Local;
     m_reconnect->setEnabled(remote);
     m_reconnectAttempts->setEnabled(remote);
+    m_forwardingPage->setEnabled(ssh);
 }
 
 SessionProfile SessionEditDialog::profile() const {
@@ -473,6 +568,10 @@ SessionProfile SessionEditDialog::profile() const {
     p.ssh.keepAliveSeconds = m_keepAlive->value();
     p.ssh.connectTimeoutSeconds = m_timeout->value();
     p.ssh.remoteCommand = m_command->text().toStdString();
+    p.ssh.forwards = m_forwards;
+    p.ssh.forwardAgent = m_forwardAgent->isChecked();
+    p.ssh.forwardX11 = m_forwardX11->isChecked();
+    p.ssh.x11Display = m_x11Display->text().trimmed().toStdString();
 
     if (p.kind == SessionKind::Telnet) {
         p.telnet.host = m_telnetHost->text().trimmed().toStdString();

@@ -32,6 +32,8 @@ constexpr EnumName<ProxyKind> kProxyKinds[] = {{ProxyKind::None, "none"},
                                                {ProxyKind::JumpHost, "jump"}};
 
 constexpr EnumName<EchoMode> kEchoModes[] = {{EchoMode::Auto, "auto"}, {EchoMode::On, "on"}, {EchoMode::Off, "off"}};
+constexpr EnumName<ForwardKind> kForwardKinds[] = {
+    {ForwardKind::Local, "local"}, {ForwardKind::Remote, "remote"}, {ForwardKind::Dynamic, "dynamic"}};
 constexpr EnumName<NewlineMode> kNewlineModes[] = {
     {NewlineMode::Cr, "cr"}, {NewlineMode::Lf, "lf"}, {NewlineMode::CrLf, "crlf"}};
 constexpr EnumName<platform::Parity> kParities[] = {{platform::Parity::None, "none"},
@@ -153,6 +155,17 @@ ReconnectSettings reconnectFromJson(const core::Json& r, const ReconnectSettings
 
 } // namespace
 
+std::string PortForwardSettings::summary() const {
+    const std::string listen = (bindAddress.empty() ? std::string() : bindAddress + ":") + std::to_string(bindPort);
+    const std::string target = targetHost + ":" + std::to_string(targetPort);
+    switch (kind) {
+    case ForwardKind::Local: return "L " + listen + " -> " + target;
+    case ForwardKind::Remote: return "R " + listen + " -> " + target;
+    case ForwardKind::Dynamic: return "D " + listen;
+    }
+    return {};
+}
+
 std::string SessionProfile::target() const {
     switch (kind) {
     case SessionKind::Local: return local.program.empty() ? std::string("(login shell)") : local.program;
@@ -219,6 +232,22 @@ core::Json SessionProfile::toJson() const {
         s["environment"] = envToJson(ssh.environment);
         s["proxy"] = proxyToJson(ssh.proxy);
         s["reconnect"] = reconnectToJson(ssh.reconnect);
+        core::Json forwards = core::Json::array();
+        for (const PortForwardSettings& forward : ssh.forwards) {
+            core::Json f;
+            f["kind"] = toName(kForwardKinds, forward.kind);
+            f["bindAddress"] = forward.bindAddress;
+            f["bindPort"] = forward.bindPort;
+            f["targetHost"] = forward.targetHost;
+            f["targetPort"] = forward.targetPort;
+            f["enabled"] = forward.enabled;
+            f["description"] = forward.description;
+            forwards.push(std::move(f));
+        }
+        s["forwards"] = std::move(forwards);
+        s["forwardAgent"] = ssh.forwardAgent;
+        s["forwardX11"] = ssh.forwardX11;
+        s["x11Display"] = ssh.x11Display;
     }
     return json;
 }
@@ -272,6 +301,24 @@ std::optional<SessionProfile> SessionProfile::fromJson(const core::Json& json, s
         return fail("session \"" + p.name + "\": unknown proxy kind");
     }
     p.ssh.reconnect = reconnectFromJson(s["reconnect"], SshSettings{}.reconnect);
+    for (const core::Json& f : s["forwards"].items()) {
+        PortForwardSettings forward;
+        const auto forwardKind = fromName(kForwardKinds, f["kind"], ForwardKind::Local);
+        if (!forwardKind) {
+            return fail("session \"" + p.name + "\": unknown port forward kind");
+        }
+        forward.kind = *forwardKind;
+        forward.bindAddress = f["bindAddress"].toString();
+        forward.bindPort = portFrom(f["bindPort"], 0);
+        forward.targetHost = f["targetHost"].toString();
+        forward.targetPort = portFrom(f["targetPort"], 0);
+        forward.enabled = f["enabled"].toBool(true);
+        forward.description = f["description"].toString();
+        p.ssh.forwards.push_back(std::move(forward));
+    }
+    p.ssh.forwardAgent = s["forwardAgent"].toBool(false);
+    p.ssh.forwardX11 = s["forwardX11"].toBool(false);
+    p.ssh.x11Display = s["x11Display"].toString();
 
     const core::Json& t = json["telnet"];
     p.telnet.host = t["host"].toString();
@@ -396,6 +443,17 @@ std::vector<std::string> SessionStore::validate(const SessionProfile& profile) c
         }
         if (profile.ssh.auth == AuthMethod::PublicKey && profile.ssh.identityFile.empty()) {
             problems.emplace_back("public key authentication needs an identity file");
+        }
+        for (const PortForwardSettings& forward : profile.ssh.forwards) {
+            if (!forward.enabled) {
+                continue;
+            }
+            if (forward.kind != ForwardKind::Remote && forward.bindPort == 0) {
+                problems.push_back("port forward " + forward.summary() + " needs a local port");
+            }
+            if (forward.kind != ForwardKind::Dynamic && (forward.targetHost.empty() || forward.targetPort == 0)) {
+                problems.push_back("port forward " + forward.summary() + " needs a destination host and port");
+            }
         }
         const ProxySettings& proxy = profile.ssh.proxy;
         if ((proxy.kind == ProxyKind::Socks5 || proxy.kind == ProxyKind::HttpConnect) &&

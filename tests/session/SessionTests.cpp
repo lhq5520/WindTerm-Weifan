@@ -68,7 +68,8 @@ WT_TEST(themes_builtin_lookup_and_json_round_trip) {
 
 WT_TEST(keymap_defaults_have_no_conflicts) {
     // Rarely used commands are reachable from the menus only (users can bind them).
-    const std::vector<Action> menuOnly = {Action::NewTelnetSession, Action::NewSerialSession, Action::SendBreak};
+    const std::vector<Action> menuOnly = {Action::NewTelnetSession, Action::NewSerialSession, Action::SendBreak,
+                                          Action::PortForwarding};
     for (auto flavor : {KeymapFlavor::Standard, KeymapFlavor::Mac}) {
         const Keymap map = Keymap::defaults(flavor);
         WT_CHECK(map.conflicts().empty());
@@ -370,6 +371,34 @@ WT_TEST(session_telnet_and_serial_profiles_round_trip) {
     WT_CHECK_EQ(defaults.profiles()[1].serial.line.baudRate, 115200);
     WT_CHECK_EQ(platform::describeSerialConfig(defaults.profiles()[1].serial.line), std::string("115200 8N1"));
     WT_CHECK(defaults.profiles()[1].serial.reconnect.enabled);
+}
+
+WT_TEST(session_ssh_forwarding_settings) {
+    SessionStore store;
+    SessionProfile ssh = sshProfile("web", "web.example");
+    ssh.ssh.forwards = {{ForwardKind::Local, "", 8080, "db", 5432, true, "database"},
+                        {ForwardKind::Remote, "0.0.0.0", 9000, "localhost", 3000, false, ""},
+                        {ForwardKind::Dynamic, "127.0.0.1", 1080, "", 0, true, "socks"}};
+    ssh.ssh.forwardAgent = true;
+    ssh.ssh.forwardX11 = true;
+    ssh.ssh.x11Display = ":1";
+    const std::string id = store.upsert(ssh);
+    WT_CHECK(store.validate(*store.find(id)).empty());
+    WT_CHECK_EQ(ssh.ssh.forwards[0].summary(), std::string("L 8080 -> db:5432"));
+    WT_CHECK_EQ(ssh.ssh.forwards[1].summary(), std::string("R 0.0.0.0:9000 -> localhost:3000"));
+    WT_CHECK_EQ(ssh.ssh.forwards[2].summary(), std::string("D 127.0.0.1:1080"));
+    std::vector<std::string> warnings;
+    const SessionStore loaded = SessionStore::fromJson(*core::Json::parse(store.toJson().dump()), &warnings);
+    WT_CHECK(warnings.empty());
+    WT_REQUIRE(loaded.profiles().size() == 1u);
+    WT_CHECK(loaded.profiles()[0] == store.profiles()[0]);
+
+    // Incomplete enabled forwards are reported; disabled ones are ignored.
+    SessionProfile broken = ssh;
+    broken.ssh.forwards = {{ForwardKind::Local, "", 0, "db", 5432, true, ""},
+                           {ForwardKind::Remote, "", 9000, "", 0, true, ""},
+                           {ForwardKind::Local, "", 0, "", 0, false, ""}};
+    WT_CHECK_EQ(store.validate(broken).size(), std::size_t(2));
 }
 
 WT_TEST(session_telnet_and_serial_validation) {

@@ -89,7 +89,7 @@ void TerminalTab::split(TerminalPane* target, Qt::Orientation orientation, Termi
             parentSplitter->replaceWidget(index, splitter);
             parentSplitter->setSizes(sizes);
         } else {
-            layout()->replaceWidget(target, splitter);
+            delete layout()->replaceWidget(target, splitter); // the replaced item is ours to delete
             m_root = splitter;
         }
         splitter->addWidget(target);
@@ -126,7 +126,7 @@ void TerminalTab::closePane(TerminalPane* pane) {
             grandParent->replaceWidget(grandParent->indexOf(splitter), only);
             grandParent->setSizes(sizes);
         } else {
-            layout()->replaceWidget(splitter, only);
+            delete layout()->replaceWidget(splitter, only);
             m_root = only;
         }
         only->show();

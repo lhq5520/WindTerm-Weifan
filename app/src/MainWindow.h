@@ -69,6 +69,8 @@ public Q_SLOTS:
     void reconnectActive();
     // Telnet BREAK / serial break condition on the active pane.
     void sendBreak();
+    // Lists/edits the port forwards of the active SSH session.
+    void showPortForwarding();
     // Shows/hides the SFTP browser for the active SSH pane.
     void setFileBrowserVisible(bool visible);
 

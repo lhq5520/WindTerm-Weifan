@@ -6,6 +6,7 @@
 #include "wt/platform/Files.h"
 #include "wt/ssh/KnownHosts.h"
 #include "wt/ssh/Sftp.h"
+#include "wt/ssh/X11.h"
 
 #include <libssh2_sftp.h>
 
@@ -250,6 +251,41 @@ struct KbdIntContext {
 };
 
 // ---------------------------------------------------------------------------------------------
+// Channels opened by the server (X11 connections, agent requests)
+
+namespace {
+
+template <typename Callback>
+void setSessionCallback(LIBSSH2_SESSION* session, int type, Callback callback) {
+#if LIBSSH2_VERSION_NUM >= 0x010b01
+    libssh2_session_callback_set2(session, type, reinterpret_cast<libssh2_cb_generic*>(callback));
+#else
+    libssh2_session_callback_set(session, type, reinterpret_cast<void*>(callback));
+#endif
+}
+
+} // namespace
+
+struct IncomingChannelCallbacks {
+    static LIBSSH2_X11_OPEN_FUNC(x11) {
+        (void)session;
+        auto* self = static_cast<SshConnection*>(*abstract);
+        self->m_incoming.push_back({SshConnection::IncomingChannel::Type::X11, channel, shost ? shost : "", sport});
+    }
+    static LIBSSH2_AUTHAGENT_FUNC(agent) {
+        (void)session;
+        auto* self = static_cast<SshConnection*>(*abstract);
+        self->m_incoming.push_back({SshConnection::IncomingChannel::Type::Agent, channel, {}, 0});
+    }
+};
+
+std::vector<SshConnection::IncomingChannel> SshConnection::takeIncomingChannels() {
+    std::vector<IncomingChannel> channels;
+    channels.swap(m_incoming);
+    return channels;
+}
+
+// ---------------------------------------------------------------------------------------------
 // SshConnection
 
 std::shared_ptr<SshConnection> SshConnection::connect(const ConnectOptions& options, SshInteraction& ui,
@@ -331,7 +367,11 @@ std::shared_ptr<SshConnection> SshConnection::connect(const ConnectOptions& opti
         return fail(aborter && aborter->aborted() ? "cancelled" : status.message());
     }
     if (options.keepAliveSeconds > 0) {
-        libssh2_keepalive_config(self->m_session, 1, static_cast<unsigned>(options.keepAliveSeconds));
+        // want_reply = 0: libssh2 never consumes the replies (servers answer with
+        // SSH_MSG_REQUEST_FAILURE), so they would pile up in its packet queue and be mistaken for
+        // the answer to the next global request (tcpip-forward). A dead peer is still detected:
+        // the unacknowledged keep-alive trips the TCP user timeout set above.
+        libssh2_keepalive_config(self->m_session, 0, static_cast<unsigned>(options.keepAliveSeconds));
     }
     // Blocking calls after connecting must not time out on idle sessions.
     libssh2_session_set_timeout(self->m_session, 0);
@@ -616,16 +656,47 @@ core::Status SshConnection::authenticate(SshInteraction& ui) {
     return core::Status::error(message);
 }
 
-LIBSSH2_CHANNEL* SshConnection::openShellChannel(const ShellOptions& options, std::string* error) {
+LIBSSH2_CHANNEL* SshConnection::openShellChannel(const ShellOptions& options, std::string* error, ShellExtras* extras) {
     auto fail = [&](const std::string& what) -> LIBSSH2_CHANNEL* {
         if (error) {
             *error = what + ": " + lastError();
         }
         return nullptr;
     };
+    ShellExtras ignored;
+    ShellExtras& extra = extras ? *extras : ignored;
     LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(m_session);
     if (!channel) {
         return fail("cannot open a session channel");
+    }
+    // Forwarding requests precede the shell; a refusal is reported but not fatal.
+    if (options.forwarding.agent) {
+        setSessionCallback(m_session, LIBSSH2_CALLBACK_AUTHAGENT, &IncomingChannelCallbacks::agent);
+        if (libssh2_channel_request_auth_agent(channel) == 0) {
+            extra.agentForwarding = true;
+        } else {
+            extra.warnings.push_back("the server refused agent forwarding: " + lastError());
+        }
+    }
+    if (options.forwarding.x11) {
+        const char* environmentDisplay = std::getenv("DISPLAY");
+        const std::string display = !options.forwarding.x11Display.empty() ? options.forwarding.x11Display
+                                    : environmentDisplay                   ? environmentDisplay
+                                                                           : "";
+        const auto parsed = parseX11Display(display);
+        if (!parsed) {
+            extra.warnings.push_back(display.empty() ? "X11 forwarding: DISPLAY is not set"
+                                                     : "X11 forwarding: cannot parse DISPLAY \"" + display + "\"");
+        } else {
+            setSessionCallback(m_session, LIBSSH2_CALLBACK_X11, &IncomingChannelCallbacks::x11);
+            extra.x11FakeCookie = randomX11Cookie();
+            const std::string hex = hexEncode(extra.x11FakeCookie);
+            if (libssh2_channel_x11_req_ex(channel, 0, "MIT-MAGIC-COOKIE-1", hex.c_str(), parsed->screen) == 0) {
+                extra.x11Forwarding = true;
+            } else {
+                extra.warnings.push_back("the server refused X11 forwarding: " + lastError());
+            }
+        }
     }
     for (const auto& [name, value] : options.environment) {
         // Servers only accept variables listed in AcceptEnv; a refusal is not fatal.

@@ -114,7 +114,8 @@ struct ShellSink {
                     exitStatus = status;
                     error = message;
                     changed.notify_all();
-                }};
+                },
+                {}};
     }
     bool waitFor(const std::string& text, std::chrono::milliseconds timeout = 10s) {
         std::unique_lock lock(mutex);

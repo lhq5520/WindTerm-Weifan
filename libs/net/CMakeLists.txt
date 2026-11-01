@@ -4,9 +4,11 @@
 add_library(wt_net STATIC
     include/wt/net/Proxy.h
     include/wt/net/Socket.h
+    include/wt/net/SocksServer.h
     include/wt/net/Telnet.h
     src/Proxy.cpp
     src/Socket.cpp
+    src/SocksServer.cpp
     src/Telnet.cpp)
 add_library(wt::net ALIAS wt_net)
 

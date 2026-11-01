@@ -50,6 +50,23 @@ struct LocalSettings {
     friend bool operator==(const LocalSettings&, const LocalSettings&) = default;
 };
 
+enum class ForwardKind { Local, Remote, Dynamic };
+
+// A saved port forward (OpenSSH -L / -R / -D).
+struct PortForwardSettings {
+    ForwardKind kind = ForwardKind::Local;
+    std::string bindAddress; // Local/Dynamic: empty = 127.0.0.1; Remote: empty = the server's loopback
+    std::uint16_t bindPort = 0;
+    std::string targetHost; // Local: as seen from the server; Remote: as seen from this machine
+    std::uint16_t targetPort = 0;
+    bool enabled = true;
+    std::string description;
+
+    // "L 8080 -> db:5432", "R 9000 -> localhost:3000", "D 1080"
+    std::string summary() const;
+    friend bool operator==(const PortForwardSettings&, const PortForwardSettings&) = default;
+};
+
 struct SshSettings {
     std::string host;
     std::uint16_t port = 22;
@@ -63,6 +80,10 @@ struct SshSettings {
     std::vector<std::pair<std::string, std::string>> environment;
     ProxySettings proxy;
     ReconnectSettings reconnect;
+    std::vector<PortForwardSettings> forwards;
+    bool forwardAgent = false; // lets the server use the local SSH agent (only for trusted hosts)
+    bool forwardX11 = false;
+    std::string x11Display; // empty: $DISPLAY
 
     friend bool operator==(const SshSettings&, const SshSettings&) = default;
 };

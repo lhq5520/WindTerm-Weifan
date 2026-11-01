@@ -20,7 +20,8 @@ wt_add_test(wt_terminal_tests
     LIBS wt::terminal
     LABELS "unit;terminal")
 
-wt_add_test(wt_net_tests SOURCES net/NetTests.cpp net/TelnetTests.cpp LIBS wt::net LABELS "integration;net")
+wt_add_test(wt_net_tests SOURCES net/NetTests.cpp net/TelnetTests.cpp net/SocksServerTests.cpp LIBS wt::net
+            LABELS "integration;net")
 wt_add_test(wt_session_tests SOURCES session/SessionTests.cpp LIBS wt::session LABELS "unit;session")
 
 if(WT_HAVE_VAULT)
@@ -31,6 +32,9 @@ endif()
 if(WT_HAVE_SSH AND NOT WIN32)
     wt_add_test(wt_ssh_tests SOURCES ssh/SshTests.cpp LIBS wt::ssh LABELS "integration;ssh")
     set_tests_properties(wt_ssh_tests PROPERTIES TIMEOUT 180)
+    wt_add_test(wt_ssh_forwarding_tests SOURCES ssh/ForwardingTests.cpp ssh/X11Tests.cpp LIBS wt::ssh
+                LABELS "integration;ssh")
+    set_tests_properties(wt_ssh_forwarding_tests PROPERTIES TIMEOUT 180)
 endif()
 
 if(WIN32)

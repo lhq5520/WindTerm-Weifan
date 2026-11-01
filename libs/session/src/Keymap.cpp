@@ -34,6 +34,7 @@ const std::vector<ActionInfo>& allActions() {
         {Action::NewTelnetSession, "new-telnet-session", "New Telnet Session..."},
         {Action::NewSerialSession, "new-serial-session", "New Serial Session..."},
         {Action::SendBreak, "send-break", "Send Break"},
+        {Action::PortForwarding, "port-forwarding", "Port Forwarding..."},
     };
     return actions;
 }

@@ -5,6 +5,8 @@
 
 #include <QCoreApplication>
 
+#include <algorithm>
+
 #include <cstdlib>
 
 namespace {
@@ -73,6 +75,15 @@ bool hopFromProfile(const wt::session::SessionProfile& profile, AppContext* cont
     return true;
 }
 
+wt::ssh::ForwardKind toSshKind(wt::session::ForwardKind kind) {
+    switch (kind) {
+    case wt::session::ForwardKind::Remote: return wt::ssh::ForwardKind::Remote;
+    case wt::session::ForwardKind::Dynamic: return wt::ssh::ForwardKind::Dynamic;
+    case wt::session::ForwardKind::Local: break;
+    }
+    return wt::ssh::ForwardKind::Local;
+}
+
 bool isPermanentFailure(const QString& error) {
     // Retrying cannot fix these; it would only repeat prompts.
     return error.contains(QLatin1String("Authentication")) || error.contains(QLatin1String("Host key")) ||
@@ -80,6 +91,16 @@ bool isPermanentFailure(const QString& error) {
 }
 
 } // namespace
+
+wt::ssh::PortForward toSshForward(const wt::session::PortForwardSettings& forward) {
+    wt::ssh::PortForward out;
+    out.kind = toSshKind(forward.kind);
+    out.bindAddress = forward.bindAddress;
+    out.bindPort = forward.bindPort;
+    out.targetHost = forward.targetHost;
+    out.targetPort = forward.targetPort;
+    return out;
+}
 
 // ---------------------------------------------------------------------------------------------
 // SshPlan
@@ -112,6 +133,14 @@ bool SshPlan::fromProfile(const wt::session::SessionProfile& profile, AppContext
     plan.hops.push_back(std::move(target));
     plan.shell.command = profile.ssh.remoteCommand;
     plan.shell.environment = profile.ssh.environment;
+    for (const auto& forward : profile.ssh.forwards) {
+        if (forward.enabled) {
+            plan.shell.forwarding.ports.push_back(toSshForward(forward));
+        }
+    }
+    plan.shell.forwarding.agent = profile.ssh.forwardAgent;
+    plan.shell.forwarding.x11 = profile.ssh.forwardX11;
+    plan.shell.forwarding.x11Display = profile.ssh.x11Display;
     plan.shell.environment.emplace_back("COLORTERM", "truecolor");
     plan.shell.environment.emplace_back("TERM_PROGRAM", "WindTerm-Weifan");
     const auto& last = plan.hops.back();
@@ -261,6 +290,15 @@ void SshBackend::startAttempt() {
                     }
                 });
             };
+            callbacks.onNotice = [self](const std::string& message) {
+                const QString text = QStringLiteral("[%1]").arg(QString::fromStdString(message));
+                QMetaObject::invokeMethod(QCoreApplication::instance(), [self, text] {
+                    if (SshBackend* backend = self.data()) {
+                        Q_EMIT backend->notice(text);
+                        Q_EMIT backend->forwardsChanged();
+                    }
+                });
+            };
             auto started = wt::ssh::SshShell::start(connection, plan.shell, std::move(callbacks), &error);
             shell = std::shared_ptr<wt::ssh::SshShell>(std::move(started));
         }
@@ -404,6 +442,43 @@ void SshBackend::resize(int rows, int columns, int pixelWidth, int pixelHeight) 
     if (m_shell) {
         m_shell->resize(rows, columns, pixelWidth, pixelHeight);
     }
+}
+
+std::vector<wt::ssh::ForwardStatus> SshBackend::forwards() const {
+    return m_shell ? m_shell->forwards() : std::vector<wt::ssh::ForwardStatus>{};
+}
+
+int SshBackend::addForward(const wt::ssh::PortForward& forward) {
+    m_plan.shell.forwarding.ports.push_back(forward); // re-established after reconnects
+    const int id = m_shell ? m_shell->addForward(forward) : 0;
+    Q_EMIT forwardsChanged();
+    return id;
+}
+
+void SshBackend::removeForward(int id) {
+    if (!m_shell) {
+        return;
+    }
+    for (const auto& status : m_shell->forwards()) {
+        if (status.id == id) {
+            auto& ports = m_plan.shell.forwarding.ports;
+            const auto it = std::find(ports.begin(), ports.end(), status.forward);
+            if (it != ports.end()) {
+                ports.erase(it);
+            }
+            break;
+        }
+    }
+    m_shell->removeForward(id);
+    Q_EMIT forwardsChanged();
+}
+
+bool SshBackend::agentForwardingActive() const {
+    return m_shell && m_shell->agentForwarding();
+}
+
+bool SshBackend::x11ForwardingActive() const {
+    return m_shell && m_shell->x11Forwarding();
 }
 
 void SshBackend::terminate() {

@@ -45,6 +45,9 @@ private:
     QWidget* createLocalPage();
     QWidget* createTelnetPage();
     QWidget* createSerialPage();
+    QWidget* createForwardingPage();
+    void reloadForwards();
+    void editForward(int index); // -1: add a new one
     void updateVisibility();
 
     AppContext* m_context; // outlives the (modal) dialog
@@ -87,6 +90,13 @@ private:
     QComboBox* m_flowControl = nullptr;
     QComboBox* m_serialEcho = nullptr;
     QComboBox* m_serialNewline = nullptr;
+    // ssh forwarding
+    std::vector<wt::session::PortForwardSettings> m_forwards;
+    QTreeWidget* m_forwardList = nullptr;
+    QCheckBox* m_forwardAgent = nullptr;
+    QCheckBox* m_forwardX11 = nullptr;
+    QLineEdit* m_x11Display = nullptr;
+    QWidget* m_forwardingPage = nullptr;
     // proxy / reconnect
     QComboBox* m_proxyKind = nullptr;
     QLineEdit* m_proxyHost = nullptr;

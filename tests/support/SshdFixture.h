@@ -63,12 +63,32 @@ public:
         }
         probe.close();
         m_port = port;
+        // X11 forwarding: sshd runs xauth for the session; a wrapper keeps it away from the user's
+        // real ~/.Xauthority.
+        for (const char* path : {"/usr/bin/xauth", "/opt/X11/bin/xauth", "/usr/X11/bin/xauth", "/usr/local/bin/xauth"}) {
+            if (::access(path, X_OK) == 0) {
+                m_xauth = path;
+                break;
+            }
+        }
+        std::string x11;
+        if (!m_xauth.empty()) {
+            const std::string wrapper = m_dir + "/xauth-wrapper";
+            const std::string script =
+                "#!/bin/sh\nXAUTHORITY=" + remoteXauthority() + "\nexport XAUTHORITY\nexec " + m_xauth + " \"$@\"\n";
+            if (platform::writeFileAtomic(wrapper, script)) {
+                ::chmod(wrapper.c_str(), 0755);
+                x11 = "X11Forwarding yes\nX11UseLocalhost yes\nX11DisplayOffset 30\nXAuthLocation " + wrapper + "\n";
+            } else {
+                m_xauth.clear();
+            }
+        }
         const std::string config = "Port " + std::to_string(m_port) +
                                    "\nListenAddress 127.0.0.1\nHostKey " + m_dir + "/host_key\nPidFile " + m_dir +
                                    "/sshd.pid\nAuthorizedKeysFile " + m_dir +
                                    "/authorized_keys\nStrictModes no\nUsePAM no\nPasswordAuthentication yes\n"
-                                   "KbdInteractiveAuthentication no\nAllowTcpForwarding yes\nAcceptEnv WT_*\n"
-                                   "Subsystem sftp internal-sftp\nLogLevel ERROR\n";
+                                   "KbdInteractiveAuthentication no\nAllowTcpForwarding yes\nAllowAgentForwarding yes\n"
+                                   "AcceptEnv WT_*\nSubsystem sftp internal-sftp\nLogLevel ERROR\n" + x11;
         if (!platform::writeFileAtomic(m_dir + "/sshd_config", config)) {
             *reason = "cannot write sshd_config";
             return false;
@@ -142,6 +162,10 @@ public:
     std::string strangerKey() const { return m_dir + "/stranger_key"; }
     std::string hostPublicKey() const { return m_dir + "/host_key.pub"; }
     std::string knownHosts() const { return m_dir + "/known_hosts"; }
+    // X11 forwarding is enabled when xauth exists; remote commands find the session's (fake)
+    // cookie in remoteXauthority().
+    bool x11Available() const { return !m_xauth.empty(); }
+    std::string remoteXauthority() const { return m_dir + "/remote.xauth"; }
     static std::string user() {
         const passwd* pw = ::getpwuid(::getuid());
         return pw ? pw->pw_name : "";
@@ -151,6 +175,7 @@ private:
     static bool run(const std::string& command) { return std::system(("{ " + command + "; } >/dev/null 2>&1").c_str()) == 0; }
 
     std::string m_sshd;
+    std::string m_xauth;
     std::string m_dir;
     std::uint16_t m_port = 0;
     pid_t m_pid = -1;

@@ -100,6 +100,12 @@ core::Status socketPair(Socket& first, Socket& second);
 
 // Listening TCP socket on 127.0.0.1 (port 0 picks a free port); used by tests and port forwards.
 core::Status listenLoopback(std::uint16_t port, Socket& out, std::uint16_t& boundPort);
+// Listening TCP socket on `address` ("" or "localhost": 127.0.0.1, "*" / "0.0.0.0": all IPv4
+// interfaces, "::" all IPv6, or a literal/host name). Non-blocking, close-on-exec.
+core::Status listenTcp(const std::string& address, std::uint16_t port, Socket& out, std::uint16_t& boundPort);
+// Connects to a Unix domain socket (SSH agent, X server). A leading '@' names a Linux abstract
+// socket. Not available on Windows.
+core::Status connectUnix(const std::string& path, Socket& out);
 core::Status acceptConnection(Socket& listener, Socket& out, std::chrono::milliseconds timeout = {});
 
 } // namespace wt::net

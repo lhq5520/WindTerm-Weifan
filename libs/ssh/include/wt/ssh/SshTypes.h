@@ -60,6 +60,45 @@ struct ConnectOptions {
     bool tryDefaultKeys = true;              // Auto: also try ~/.ssh/id_ed25519, id_ecdsa, id_rsa
 };
 
+enum class ForwardKind { Local, Remote, Dynamic };
+
+// One port forward, like OpenSSH's -L, -R and -D.
+struct PortForward {
+    ForwardKind kind = ForwardKind::Local;
+    // Local/Dynamic: local address to listen on (empty: 127.0.0.1). Remote: address on the server
+    // (empty: its loopback interface; the server's GatewayPorts setting decides what is allowed).
+    std::string bindAddress;
+    std::uint16_t bindPort = 0; // 0: any free port (reported in ForwardStatus::boundPort)
+    // Local: destination as seen from the server. Remote: destination as seen from this machine.
+    // Unused for Dynamic (SOCKS clients choose the destination).
+    std::string targetHost;
+    std::uint16_t targetPort = 0;
+
+    // "L 127.0.0.1:8080 -> db:5432", "R localhost:9000 -> 127.0.0.1:3000", "D 127.0.0.1:1080 (SOCKS)"
+    std::string describe() const;
+    friend bool operator==(const PortForward&, const PortForward&) = default;
+};
+
+struct ForwardingOptions {
+    std::vector<PortForward> ports;
+    // Forward the local SSH agent ($SSH_AUTH_SOCK, or OpenSSH's agent pipe on Windows).
+    bool agent = false;
+    bool x11 = false;
+    std::string x11Display;     // empty: $DISPLAY
+    std::string xauthorityPath; // empty: $XAUTHORITY or ~/.Xauthority
+};
+
+struct ForwardStatus {
+    enum class State { Starting, Active, Failed, Closed };
+    int id = 0;
+    PortForward forward;
+    State state = State::Starting;
+    std::string message;        // why it failed
+    std::uint16_t boundPort = 0; // the port actually listened on
+    int openConnections = 0;
+    int totalConnections = 0;
+};
+
 struct ShellOptions {
     std::string term = "xterm-256color";
     int rows = 24;
@@ -68,6 +107,7 @@ struct ShellOptions {
     int pixelHeight = 0;
     std::vector<std::pair<std::string, std::string>> environment; // sent with "env" requests
     std::string command;                                          // empty: interactive shell
+    ForwardingOptions forwarding;
 };
 
 } // namespace wt::ssh

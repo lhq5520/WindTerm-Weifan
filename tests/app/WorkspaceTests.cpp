@@ -99,7 +99,8 @@ private Q_SLOTS:
         QCOMPARE(window->activePane(), second);
         QTRY_VERIFY_WITH_TIMEOUT(second->session()->isRunning(), 5000);
         second->session()->sendBytes("exit 0\r");
-        QTRY_COMPARE_WITH_TIMEOUT(window->tabCount(), 1, 5000); // the tab closes with its shell
+        // The user's real login shell: its rc files can take seconds on a busy machine.
+        QTRY_COMPARE_WITH_TIMEOUT(window->tabCount(), 1, 20000); // the tab closes with its shell
         QVERIFY(window->isVisible());
 
         window->action(Action::NewTab)->trigger();

@@ -39,6 +39,7 @@ enum class Action {
     NewTelnetSession,
     NewSerialSession,
     SendBreak,
+    PortForwarding,
     Count_ // number of actions; not an action
 };
 

@@ -19,7 +19,9 @@ using socklen_type = int;
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
+#include <cstddef>
 using socklen_type = socklen_t;
 #endif
 
@@ -467,6 +469,109 @@ core::Status listenLoopback(std::uint16_t port, Socket& out, std::uint16_t& boun
     boundPort = ntohs(address.sin_port);
     out = std::move(socket);
     return core::Status::ok();
+}
+
+core::Status listenTcp(const std::string& address, std::uint16_t port, Socket& out, std::uint16_t& boundPort) {
+    initializeNetworking();
+    std::string host = address;
+    if (host.empty() || host == "localhost") {
+        host = "127.0.0.1";
+    } else if (host == "*") {
+        host = "0.0.0.0";
+    }
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICSERV;
+    addrinfo* results = nullptr;
+    const std::string service = std::to_string(port);
+    if (const int rc = ::getaddrinfo(host.c_str(), service.c_str(), &hints, &results); rc != 0) {
+#ifdef _WIN32
+        return core::Status::error("cannot resolve " + host + ": " + errorText(rc), rc);
+#else
+        return core::Status::error("cannot resolve " + host + ": " + gai_strerror(rc), rc);
+#endif
+    }
+    core::Status lastStatus = core::Status::error("no address for " + host);
+    for (addrinfo* ai = results; ai; ai = ai->ai_next) {
+        Socket socket(static_cast<NativeSocket>(::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol)));
+        if (!socket.isValid()) {
+            lastStatus = core::Status::error("socket failed: " + errorText(lastError()), lastError());
+            continue;
+        }
+#ifndef _WIN32
+        const int reuse = 1;
+        ::setsockopt(socket.native(), SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        fcntl(socket.native(), F_SETFD, FD_CLOEXEC);
+#else
+        const BOOL exclusive = TRUE; // no port stealing between processes
+        ::setsockopt(static_cast<SOCKET>(socket.native()), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+#endif
+        if (ai->ai_family == AF_INET6) {
+            const int v6only = 1;
+            ::setsockopt(socket.native(), IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only),
+                         sizeof(v6only));
+        }
+        if (::bind(socket.native(), ai->ai_addr, static_cast<socklen_type>(ai->ai_addrlen)) != 0 ||
+            ::listen(socket.native(), 64) != 0) {
+            const int code = lastError();
+            lastStatus = core::Status::error("cannot listen on " + host + ":" + service + ": " + errorText(code), code);
+            continue;
+        }
+        sockaddr_storage bound{};
+        socklen_type length = sizeof(bound);
+        ::getsockname(socket.native(), reinterpret_cast<sockaddr*>(&bound), &length);
+        boundPort = bound.ss_family == AF_INET6 ? ntohs(reinterpret_cast<sockaddr_in6*>(&bound)->sin6_port)
+                                                : ntohs(reinterpret_cast<sockaddr_in*>(&bound)->sin_port);
+        socket.setNonBlocking(true);
+        out = std::move(socket);
+        freeaddrinfo(results);
+        return core::Status::ok();
+    }
+    freeaddrinfo(results);
+    return lastStatus;
+}
+
+core::Status connectUnix(const std::string& path, Socket& out) {
+#ifdef _WIN32
+    (void)out;
+    return core::Status::error("Unix domain sockets are not supported here: " + path);
+#else
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    if (path.empty() || path.size() >= sizeof(address.sun_path)) {
+        return core::Status::error("invalid socket path: " + path);
+    }
+    socklen_type length = 0;
+    if (path.front() == '@') {
+#ifdef __linux__
+        address.sun_path[0] = '\0'; // abstract namespace
+        std::memcpy(address.sun_path + 1, path.data() + 1, path.size() - 1);
+        length = static_cast<socklen_type>(offsetof(sockaddr_un, sun_path) + path.size());
+#else
+        return core::Status::error("abstract sockets are Linux-only: " + path);
+#endif
+    } else {
+        std::memcpy(address.sun_path, path.data(), path.size());
+        length = static_cast<socklen_type>(sizeof(address));
+    }
+    Socket socket(::socket(AF_UNIX, SOCK_STREAM, 0));
+    if (!socket.isValid()) {
+        return core::Status::error(std::string("socket failed: ") + std::strerror(errno), errno);
+    }
+    fcntl(socket.native(), F_SETFD, FD_CLOEXEC);
+    int rc;
+    do {
+        rc = ::connect(socket.native(), reinterpret_cast<sockaddr*>(&address), length);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0) {
+        return core::Status::error("cannot connect to " + path + ": " + std::strerror(errno), errno);
+    }
+    out = std::move(socket);
+    return core::Status::ok();
+#endif
 }
 
 core::Status acceptConnection(Socket& listener, Socket& out, std::chrono::milliseconds timeout) {

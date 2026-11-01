@@ -8,6 +8,7 @@
 #include "TerminalSession.h"
 #include "TerminalTab.h"
 #include "TerminalWidget.h"
+#include "ssh/ForwardingDialog.h"
 #include "ssh/SftpPanel.h"
 #include "ssh/SshBackend.h"
 #include "ssh/SshPrompter.h"
@@ -267,6 +268,56 @@ private Q_SLOTS:
         QTRY_VERIFY_WITH_TIMEOUT(isConnected(pane), 15000);
         pane->session()->sendBytes("echo through-$((6*7))\r");
         QTRY_VERIFY_WITH_TIMEOUT(screenContains(*pane->session(), QStringLiteral("through-42")), 10000);
+    }
+
+    void portForwardsFromTheProfileAndTheDialog() {
+        wt::test::EchoServer echo;
+        QVERIFY(echo.start());
+        // A free local port for the saved forward.
+        wt::net::Socket probe;
+        std::uint16_t localPort = 0;
+        QVERIFY(wt::net::listenLoopback(0, probe, localPort));
+        probe.close();
+        SessionProfile p = profile(QStringLiteral("tunnels"));
+        p.ssh.forwards = {{ForwardKind::Local, "127.0.0.1", localPort, "127.0.0.1", echo.port(), true, "echo"},
+                          {ForwardKind::Dynamic, "127.0.0.1", 0, "", 0, false, "disabled"}};
+        auto w = window(makeContext());
+        TerminalPane* pane = w->openProfile(p);
+        QTRY_VERIFY_WITH_TIMEOUT(isConnected(pane), 15000);
+        SshBackend* backend = sshBackend(pane);
+        QTRY_VERIFY_WITH_TIMEOUT(backend->forwards().size() == 1 &&
+                                     backend->forwards().front().state == wt::ssh::ForwardStatus::State::Active,
+                                 10000);
+        {
+            wt::net::Socket socket;
+            QVERIFY(wt::net::connectTcp("127.0.0.1", localPort, std::chrono::seconds(5), socket));
+            QVERIFY(socket.sendAll("tunnel-ok"));
+            char reply[9];
+            QVERIFY(socket.receiveExact(reply, sizeof(reply), std::chrono::seconds(10)));
+            QCOMPARE(std::string(reply, sizeof(reply)), std::string("tunnel-ok"));
+        }
+
+        // The live dialog lists it and adds a SOCKS proxy that is re-created after reconnects.
+        ForwardingDialog dialog(backend, w.get());
+        QCOMPARE(dialog.list()->topLevelItemCount(), 1);
+        PortForwardSettings socks;
+        socks.kind = ForwardKind::Dynamic;
+        dialog.addForward(socks);
+        QTRY_VERIFY_WITH_TIMEOUT(backend->forwards().size() == 2, 10000);
+        dialog.refresh();
+        QCOMPARE(dialog.list()->topLevelItemCount(), 2);
+        QCOMPARE(backend->currentPlan().shell.forwarding.ports.size(), std::size_t(2));
+        dialog.list()->setCurrentItem(dialog.list()->topLevelItem(1));
+        dialog.removeSelected();
+        QTRY_VERIFY_WITH_TIMEOUT(backend->forwards().size() == 1, 10000);
+        QCOMPARE(backend->currentPlan().shell.forwarding.ports.size(), std::size_t(1));
+
+        // The session editor keeps the forwarding settings.
+        SessionEditDialog edit(nullptr, p);
+        QCOMPARE(edit.profile().ssh.forwards, p.ssh.forwards);
+        QCOMPARE(edit.findChild<QTreeWidget*>(QStringLiteral("forwardList"))->topLevelItemCount(), 2);
+        edit.findChild<QCheckBox*>(QStringLiteral("forwardAgent"))->setChecked(true);
+        QVERIFY(edit.profile().ssh.forwardAgent);
     }
 
     void sftpBrowserTransfersFiles() {

@@ -10,6 +10,7 @@
 #include "TerminalWidget.h"
 
 #ifdef WT_HAVE_SSH
+#include "ssh/ForwardingDialog.h"
 #include "ssh/SftpPanel.h"
 #include "ssh/SshBackend.h"
 #endif
@@ -519,6 +520,7 @@ void MainWindow::triggerAction(Action id) {
     case Action::NewTelnetSession: newSession(wt::session::SessionKind::Telnet); break;
     case Action::NewSerialSession: newSession(wt::session::SessionKind::Serial); break;
     case Action::SendBreak: sendBreak(); break;
+    case Action::PortForwarding: showPortForwarding(); break;
     case Action::SessionManager: showSessionManager(); break;
     case Action::Settings: showSettings(); break;
     case Action::ToggleFileBrowser: break; // a checkable action: see setFileBrowserVisible()
@@ -574,6 +576,7 @@ void MainWindow::createMenus() {
     QMenu* session = menuBar()->addMenu(tr("&Session"));
     session->addAction(action(Action::Reconnect));
     session->addAction(action(Action::SendBreak));
+    session->addAction(action(Action::PortForwarding));
     session->addAction(action(Action::ToggleFileBrowser));
     session->addSeparator();
     m_sessionsMenu = session->addMenu(tr("&Open Saved Session"));
@@ -705,6 +708,21 @@ void MainWindow::sendBreak() {
         return;
     }
     statusBar()->showMessage(tr("Break sent"), 2000);
+}
+
+void MainWindow::showPortForwarding() {
+#ifdef WT_HAVE_SSH
+    TerminalPane* pane = activePane();
+    auto* backend = pane ? qobject_cast<SshBackend*>(pane->session()->backend()) : nullptr;
+    if (!backend) {
+        statusBar()->showMessage(tr("Port forwarding works in SSH sessions"), 5000);
+        return;
+    }
+    ForwardingDialog dialog(backend, this);
+    dialog.exec();
+#else
+    statusBar()->showMessage(tr("This build has no SSH support (libssh2 was not found)"), 5000);
+#endif
 }
 
 void MainWindow::newSession(wt::session::SessionKind kind) {
