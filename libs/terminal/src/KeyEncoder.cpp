@@ -154,6 +154,39 @@ std::optional<std::string> kittyTextKey(Key key, unsigned modifiers, const Keybo
     return serializeKitty(fields);
 }
 
+// Numeric keypad keys under the kitty protocol (KP_0 = 57399 ... KP_EQUAL = 57415), or nullopt
+// for the legacy encoding. "Disambiguate" reports keypad Enter and modified keypad keys this
+// way; "report all keys" every keypad key.
+std::optional<std::string> kittyKeypadKey(Key key, unsigned modifiers, const KeyboardModes& modes, KeyAction action) {
+    static constexpr unsigned kCodes[] = {
+        57399, 57400, 57401, 57402, 57403, 57404, 57405, 57406, 57407, 57408, // 0-9
+        57409,                                                                // decimal
+        57414,                                                                // enter
+        57413, 57412, 57411, 57410,                                           // + - * /
+        57415,                                                                // =
+    };
+    static constexpr char kText[] = "0123456789.\0+-*/=";
+    const unsigned flags = modes.kittyFlags;
+    const bool all = flags & KittyReportAllKeys;
+    if (!all && !(flags & KittyDisambiguate)) {
+        return std::nullopt;
+    }
+    const auto index = static_cast<std::size_t>(static_cast<int>(key) - static_cast<int>(Key::Keypad0));
+    const unsigned chordMods = modifiers & (ControlModifier | AltModifier | MetaModifier);
+    if (!all && key != Key::KeypadEnter && chordMods == NoModifier) {
+        return std::nullopt; // plain keypad text
+    }
+    KittyFields fields;
+    fields.key = kCodes[index];
+    fields.modifiers = modifiers;
+    fields.action = action;
+    fields.reportAction = flags & KittyReportEvents;
+    if (all && (flags & KittyReportText) && action != KeyAction::Release && chordMods == NoModifier && kText[index]) {
+        fields.text = std::u32string(1, static_cast<char32_t>(kText[index]));
+    }
+    return serializeKitty(fields);
+}
+
 // Repeat/release events of functional keys (cursor keys, editing keys, F1-F12).
 std::string kittyFunctionalEvent(Key key, unsigned modifiers, KeyAction action) {
     KittyFields fields;
@@ -206,6 +239,11 @@ std::string encodeKey(Key key, unsigned modifiers, const KeyboardModes& modes, K
     const bool app = modes.cursorKeysApplication;
     if (auto kitty = kittyTextKey(key, modifiers, modes, *action)) {
         return *kitty;
+    }
+    if (key >= Key::Keypad0 && key <= Key::KeypadEqual) {
+        if (auto kitty = kittyKeypadKey(key, modifiers, modes, *action)) {
+            return *kitty;
+        }
     }
     if (*action != KeyAction::Press) {
         return kittyFunctionalEvent(key, modifiers, *action);

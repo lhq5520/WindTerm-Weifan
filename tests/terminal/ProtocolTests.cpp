@@ -526,6 +526,33 @@ WT_TEST(kitty_event_types_alternates_and_text) {
     WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, alternates, {KeyAction::Release, 0, {}}), std::string());
 }
 
+WT_TEST(kitty_keypad_keys) {
+    // Disambiguate: plain keypad text stays text, keypad Enter and chords get the KP_* codes.
+    KeyboardModes kitty;
+    kitty.kittyFlags = KittyDisambiguate;
+    WT_CHECK_EQ(encodeKey(Key::Keypad1, NoModifier, kitty), std::string("1"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadPlus, ShiftModifier, kitty), std::string("+"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadEnter, NoModifier, kitty), std::string(CSI "57414u"));
+    WT_CHECK_EQ(encodeKey(Key::Keypad5, ControlModifier, kitty), std::string(CSI "57404;5u"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadDivide, AltModifier, kitty), std::string(CSI "57410;3u"));
+    // ... and releases only for the keys sent as escape codes.
+    kitty.kittyFlags = KittyDisambiguate | KittyReportEvents;
+    WT_CHECK_EQ(encodeKey(Key::Keypad1, NoModifier, kitty, KeyAction::Release), std::string());
+    WT_CHECK_EQ(encodeKey(Key::KeypadEnter, NoModifier, kitty, KeyAction::Release), std::string(CSI "57414;1:3u"));
+    // Report all keys: every keypad key, with its text when asked for.
+    KeyboardModes all;
+    all.kittyFlags = KittyReportAllKeys;
+    WT_CHECK_EQ(encodeKey(Key::Keypad0, NoModifier, all), std::string(CSI "57399u"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadEqual, NoModifier, all), std::string(CSI "57415u"));
+    all.kittyFlags = KittyReportAllKeys | KittyReportText | KittyReportEvents;
+    WT_CHECK_EQ(encodeKey(Key::KeypadDecimal, NoModifier, all), std::string(CSI "57409;;46u"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadMultiply, NoModifier, all, KeyAction::Release), std::string(CSI "57411;1:3u"));
+    WT_CHECK_EQ(encodeKey(Key::KeypadEnter, NoModifier, all), std::string(CSI "57414u")); // Enter has no text
+    WT_CHECK_EQ(encodeKey(Key::Keypad7, ControlModifier, all), std::string(CSI "57406;5u"));
+    // Without the kitty protocol: the legacy keypad.
+    WT_CHECK_EQ(encodeKey(Key::KeypadEnter, NoModifier, KeyboardModes{}), std::string("\r"));
+}
+
 WT_TEST(kitty_f3_avoids_cursor_report_clash) {
     KeyboardModes kitty;
     kitty.kittyFlags = KittyDisambiguate;

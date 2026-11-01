@@ -1167,9 +1167,11 @@ std::string TerminalWidget::encodeKeyEvent(const QKeyEvent* event, KeyAction act
         return encodeModifierKey(*modifierKey, mods, modes, action);
     }
 
-    const auto keypadKey = (event->modifiers() & Qt::KeypadModifier) && modes.keypadApplication
-                               ? mapKeypadKey(event->key())
-                               : std::nullopt;
+    // Keypad digits and operators are distinct keys in DECKPAM and the kitty protocol. (Keypad
+    // cursor keys stay ordinary cursor keys: macOS flags the main arrows as keypad keys too.)
+    const bool keypadModes = modes.keypadApplication || (modes.kittyFlags & (KittyDisambiguate | KittyReportAllKeys));
+    const auto keypadKey =
+        (event->modifiers() & Qt::KeypadModifier) && keypadModes ? mapKeypadKey(event->key()) : std::nullopt;
     // What the key typed, for the kitty protocol's alternates/text fields.
     const QString text = event->text();
     const std::u32string typed = action == KeyAction::Release ? std::u32string() : text.toStdU32String();

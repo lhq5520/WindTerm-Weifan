@@ -241,7 +241,7 @@ private Q_SLOTS:
     void kittyReleaseAndModifierEventsReachTheProgram() {
         // flags 11 = disambiguate | report events | report all keys
         auto w = window(makeContext(), QStringLiteral("stty -icanon -echo; printf '\\033[>11uREADY\\n'; printf 'got:'; "
-                                                      "head -c 24 | cat -v; echo; exec sleep 30"));
+                                                      "head -c 44 | cat -v; echo; exec sleep 30"));
         QVERIFY(w);
         TerminalPane* pane = w->activePane();
         TerminalWidget* view = pane->terminal();
@@ -250,8 +250,12 @@ private Q_SLOTS:
         QCOMPARE(pane->session()->terminal().kittyKeyboardFlags(), 11u);
         QTest::keyPress(view, Qt::Key_A);                         // CSI 97 u
         QTest::keyRelease(view, Qt::Key_A);                       // CSI 97 ; 1:3 u
+        QTest::keyPress(view, Qt::Key_1, Qt::KeypadModifier);     // CSI 57400 u (KP_1)
+        QTest::keyRelease(view, Qt::Key_1, Qt::KeypadModifier);   // CSI 57400 ; 1:3 u
         QTest::keyPress(view, Qt::Key_Shift, Qt::ShiftModifier);  // CSI 57441 ; 2 u
-        QTRY_VERIFY_WITH_TIMEOUT(screenContains(*pane->session(), QStringLiteral("got:^[[97u^[[97;1:3u^[[57441;2u")), 5000);
+        QTRY_VERIFY2_WITH_TIMEOUT(screenContains(*pane->session(),
+                                                 QStringLiteral("got:^[[97u^[[97;1:3u^[[57400u^[[57400;1:3u^[[57441;2u")),
+                                  pane->session()->terminal().screenText().c_str(), 5000);
     }
 
     void chineseTranslationIsComplete() {
