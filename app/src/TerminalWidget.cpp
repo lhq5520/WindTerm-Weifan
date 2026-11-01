@@ -1074,6 +1074,35 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
         }
     }
 
+    const std::string bytes = encodeKeyEvent(event, event->isAutoRepeat() ? KeyAction::Repeat : KeyAction::Press);
+    if (bytes.empty()) {
+        QAbstractScrollArea::keyPressEvent(event);
+        return;
+    }
+    sendUserInput(bytes);
+    m_cursorBlinkOn = true;
+    scrollToBottom();
+    event->accept();
+}
+
+void TerminalWidget::keyReleaseEvent(QKeyEvent* event) {
+    // Only the kitty protocol's "report event types" mode wants releases; Qt's auto-repeat
+    // releases are not real ones (repeats are reported as such on the press side).
+    if (!m_session || !m_session->isRunning() || event->isAutoRepeat() ||
+        !(m_session->terminal().kittyKeyboardFlags() & KittyReportEvents)) {
+        QAbstractScrollArea::keyReleaseEvent(event);
+        return;
+    }
+    const std::string bytes = encodeKeyEvent(event, KeyAction::Release);
+    if (bytes.empty()) {
+        QAbstractScrollArea::keyReleaseEvent(event);
+        return;
+    }
+    m_session->sendInput(bytes); // escape codes for the application, not command-line text
+    event->accept();
+}
+
+std::string TerminalWidget::encodeKeyEvent(const QKeyEvent* event, KeyAction action) const {
     const Terminal& term = m_session->terminal();
     const unsigned mods = toTerminalModifiers(event->modifiers());
     KeyboardModes modes;
@@ -1084,21 +1113,67 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
     modes.modifyOtherKeys = term.modes().modifyOtherKeys;
     std::string bytes;
 
+    const int key = event->key();
+    // Modifier keys on their own (kitty "report all keys" only).
+    std::optional<ModifierKey> modifierKey;
+    switch (key) {
+    case Qt::Key_Shift: modifierKey = ModifierKey::Shift; break;
+#ifdef Q_OS_MACOS
+    case Qt::Key_Control: modifierKey = ModifierKey::Super; break; // Command
+    case Qt::Key_Meta: modifierKey = ModifierKey::Control; break;
+#else
+    case Qt::Key_Control: modifierKey = ModifierKey::Control; break;
+    case Qt::Key_Meta:
+    case Qt::Key_Super_L:
+    case Qt::Key_Super_R: modifierKey = ModifierKey::Super; break;
+#endif
+    case Qt::Key_Alt:
+    case Qt::Key_AltGr: modifierKey = ModifierKey::Alt; break;
+    case Qt::Key_CapsLock: modifierKey = ModifierKey::CapsLock; break;
+    case Qt::Key_NumLock: modifierKey = ModifierKey::NumLock; break;
+    default: break;
+    }
+    if (modifierKey) {
+        return encodeModifierKey(*modifierKey, mods, modes, action);
+    }
+
     const auto keypadKey = (event->modifiers() & Qt::KeypadModifier) && modes.keypadApplication
                                ? mapKeypadKey(event->key())
                                : std::nullopt;
-    const int key = event->key();
+    // What the key typed, for the kitty protocol's alternates/text fields.
+    const QString text = event->text();
+    const std::u32string typed = action == KeyAction::Release ? std::u32string() : text.toStdU32String();
+    auto info = [&](char32_t base) {
+        KeyEventInfo e;
+        e.action = action;
+        e.text = typed;
+        if (typed.size() == 1 && typed.front() != base) {
+            e.shifted = typed.front(); // e.g. 'A' for Shift+a
+        }
+        return e;
+    };
     if (keypadKey) {
-        bytes = encodeKey(*keypadKey, mods, modes);
+        bytes = encodeKey(*keypadKey, mods, modes, action);
     } else if (const auto mapped = mapKey(key)) {
         const unsigned keyMods = key == Qt::Key_Backtab ? (mods | ShiftModifier) : mods;
-        bytes = encodeKey(*mapped, keyMods, modes);
+        bytes = encodeKey(*mapped, keyMods, modes, action);
     } else if ((mods & ControlModifier) && key >= Qt::Key_Space && key <= Qt::Key_AsciiTilde) {
         // Derive control codes from the key rather than text(): macOS does not translate them.
-        bytes = encodeCharKey(static_cast<char32_t>(key), mods & (ControlModifier | AltModifier | ShiftModifier),
-                              modes);
+        bytes = encodeCharKey(static_cast<char32_t>(key), mods & (ControlModifier | AltModifier | ShiftModifier), modes,
+                              info(static_cast<char32_t>(key)));
+    } else if (action == KeyAction::Release) {
+        // Releases carry no text: rebuild the key from its code (letters are reported unshifted).
+        if (key >= Qt::Key_Space && key <= Qt::Key_AsciiTilde) {
+            char32_t ch = static_cast<char32_t>(key);
+            if (ch >= U'A' && ch <= U'Z') {
+                ch = ch - U'A' + U'a';
+            }
+            bytes = encodeCharKey(ch, mods, modes, info(ch));
+        } else if (!text.isEmpty()) {
+            const char32_t ch = text.toUcs4().front();
+            bytes = encodeCharKey(ch, mods, modes, info(ch));
+        }
     } else {
-        const QString text = event->text();
 #ifdef Q_OS_MACOS
         // Option composes characters on macOS unless "Option as Meta" is on.
         const bool optionAsMeta = m_appearance.optionAsMeta && (mods & AltModifier);
@@ -1107,7 +1182,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
             if (ch >= U'A' && ch <= U'Z' && !(mods & ShiftModifier)) {
                 ch = ch - U'A' + U'a';
             }
-            bytes = encodeCharKey(ch, AltModifier, modes);
+            bytes = encodeCharKey(ch, AltModifier, modes, info(ch));
         }
         const unsigned textMods = NoModifier;
 #else
@@ -1118,20 +1193,13 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
                 if (cp < 0x20 || cp == 0x7F) {
                     bytes += encodeChar(cp, textMods); // control characters from the IME / layout
                 } else {
-                    bytes += encodeCharKey(cp, textMods | (mods & ShiftModifier), modes);
+                    const char32_t base = (cp >= U'A' && cp <= U'Z') ? cp - U'A' + U'a' : cp;
+                    bytes += encodeCharKey(cp, textMods | (mods & ShiftModifier), modes, info(base));
                 }
             }
         }
     }
-
-    if (bytes.empty()) {
-        QAbstractScrollArea::keyPressEvent(event);
-        return;
-    }
-    sendUserInput(bytes);
-    m_cursorBlinkOn = true;
-    scrollToBottom();
-    event->accept();
+    return bytes;
 }
 
 void TerminalWidget::sendUserInput(std::string_view bytes) {

@@ -498,6 +498,18 @@ int SshConnection::tryKeyFile(const std::string& file, SshInteraction& ui, bool&
     }
     const bool encrypted = isPrivateKeyEncrypted(*contents);
     wipe(*contents); // libssh2 reads the file itself; do not keep a copy of the private key
+    // An OpenSSH certificate is offered instead of the bare public key (libssh2 derives the
+    // signature algorithm from the certificate type).
+    std::string certificate = m_options.certificateFile.empty() ? std::string() : expandHome(m_options.certificateFile);
+    if (certificate.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(platform::pathFromUtf8(path + "-cert.pub"), ec)) {
+            certificate = path + "-cert.pub";
+        }
+    } else if (std::error_code ec; !std::filesystem::exists(platform::pathFromUtf8(certificate), ec)) {
+        ui.info("cannot read the certificate " + certificate);
+        certificate.clear();
+    }
     std::optional<std::string> passphrase = encrypted ? m_options.passphrase : std::optional<std::string>("");
     for (int attempt = 0; attempt < kMaxSecretAttempts; ++attempt) {
         if (!passphrase) {
@@ -507,14 +519,14 @@ int SshConnection::tryKeyFile(const std::string& file, SshInteraction& ui, bool&
                 return 0;
             }
         }
-        const int rc = libssh2_userauth_publickey_fromfile_ex(m_session, m_options.username.c_str(),
-                                                              static_cast<unsigned>(m_options.username.size()),
-                                                              nullptr, path.c_str(), passphrase->c_str());
+        const int rc = libssh2_userauth_publickey_fromfile_ex(
+            m_session, m_options.username.c_str(), static_cast<unsigned>(m_options.username.size()),
+            certificate.empty() ? nullptr : certificate.c_str(), path.c_str(), passphrase->c_str());
         if (rc == 0) {
             if (encrypted) {
                 m_usedPassphrase = passphrase;
             }
-            m_authMethod = "publickey";
+            m_authMethod = certificate.empty() ? "publickey" : "publickey (certificate)";
             return 1;
         }
         // A wrong passphrase means the key file cannot be decoded (LIBSSH2_ERROR_FILE); any other

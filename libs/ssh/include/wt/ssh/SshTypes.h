@@ -51,6 +51,8 @@ struct ConnectOptions {
     std::string username;
     AuthMethod auth = AuthMethod::Auto;
     std::string identityFile;                // "~" is expanded
+    // OpenSSH certificate for the identity; empty: "<identityFile>-cert.pub" when that exists.
+    std::string certificateFile;
     std::optional<std::string> password;     // tried before asking (e.g. from the vault)
     std::optional<std::string> passphrase;   // for an encrypted identity file
     std::string knownHostsPath;              // empty: no persistent host key store (always ask)

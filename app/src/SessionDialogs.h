@@ -69,6 +69,7 @@ private:
     QLineEdit* m_user = nullptr;
     QComboBox* m_auth = nullptr;
     QLineEdit* m_identity = nullptr;
+    QLineEdit* m_certificate = nullptr;
     QLineEdit* m_secret = nullptr;
     QCheckBox* m_storeSecret = nullptr;
     QSpinBox* m_keepAlive = nullptr;

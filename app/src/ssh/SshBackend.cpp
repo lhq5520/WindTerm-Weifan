@@ -39,6 +39,7 @@ bool hopFromProfile(const wt::session::SessionProfile& profile, AppContext* cont
     options.username = ssh.username.empty() ? localUserName() : ssh.username;
     options.auth = toSshAuth(ssh.auth);
     options.identityFile = ssh.identityFile;
+    options.certificateFile = ssh.certificateFile;
     options.knownHostsPath = context->knownHostsPath().toStdString();
     options.timeout = std::chrono::seconds(ssh.connectTimeoutSeconds);
     options.keepAliveSeconds = ssh.keepAliveSeconds;

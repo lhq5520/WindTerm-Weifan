@@ -55,6 +55,11 @@ public:
             *reason = "ssh-keygen failed";
             return false;
         }
+        // A key that is not in authorized_keys but carries a certificate from a trusted CA.
+        m_certificates = run("ssh-keygen -q -t ed25519 -N '' -C ca -f " + m_dir + "/ca_key") &&
+                         run("ssh-keygen -q -t ed25519 -N '' -C certified -f " + m_dir + "/certified_key") &&
+                         run("ssh-keygen -q -s " + m_dir + "/ca_key -I wt-test -n " + user() + " " + m_dir +
+                             "/certified_key.pub");
         net::Socket probe;
         std::uint16_t port = 0;
         if (!net::listenLoopback(0, probe, port)) {
@@ -88,7 +93,8 @@ public:
                                    "/sshd.pid\nAuthorizedKeysFile " + m_dir +
                                    "/authorized_keys\nStrictModes no\nUsePAM no\nPasswordAuthentication yes\n"
                                    "KbdInteractiveAuthentication no\nAllowTcpForwarding yes\nAllowAgentForwarding yes\n"
-                                   "AcceptEnv WT_*\nSubsystem sftp internal-sftp\nLogLevel ERROR\n" + x11;
+                                   "AcceptEnv WT_*\nSubsystem sftp internal-sftp\nLogLevel ERROR\n" + x11 +
+                                   (m_certificates ? "TrustedUserCAKeys " + m_dir + "/ca_key.pub\n" : std::string());
         if (!platform::writeFileAtomic(m_dir + "/sshd_config", config)) {
             *reason = "cannot write sshd_config";
             return false;
@@ -165,6 +171,9 @@ public:
     // X11 forwarding is enabled when xauth exists; remote commands find the session's (fake)
     // cookie in remoteXauthority().
     bool x11Available() const { return !m_xauth.empty(); }
+    // certifiedKey() is not authorized itself; its certificate (certifiedKey() + "-cert.pub") is.
+    bool certificatesAvailable() const { return m_certificates; }
+    std::string certifiedKey() const { return m_dir + "/certified_key"; }
     std::string remoteXauthority() const { return m_dir + "/remote.xauth"; }
     static std::string user() {
         const passwd* pw = ::getpwuid(::getuid());
@@ -176,6 +185,7 @@ private:
 
     std::string m_sshd;
     std::string m_xauth;
+    bool m_certificates = false;
     std::string m_dir;
     std::uint16_t m_port = 0;
     pid_t m_pid = -1;

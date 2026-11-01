@@ -6,6 +6,7 @@
 #include "wt/session/Settings.h"
 #include "wt/session/Theme.h"
 #include "wt/terminal/Cell.h"
+#include "wt/terminal/KeyEncoder.h"
 #include "wt/terminal/MouseEncoder.h"
 #include "wt/terminal/Search.h"
 #include "wt/terminal/Selection.h"
@@ -134,6 +135,7 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;
     void focusInEvent(QFocusEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
@@ -183,6 +185,8 @@ private:
 
     // User input (keys, IME, paste): command tracking, completion, then the session.
     void sendUserInput(std::string_view bytes);
+    // Bytes for a key press / repeat / release in the current keyboard modes.
+    std::string encodeKeyEvent(const QKeyEvent* event, wt::terminal::KeyAction action) const;
     void updateCompletion();
     void hideCompletion();
 

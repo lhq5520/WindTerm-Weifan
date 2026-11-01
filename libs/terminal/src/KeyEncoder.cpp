@@ -70,18 +70,62 @@ std::string keypadKey(Key key, unsigned modifiers, const KeyboardModes& modes) {
     return withAlt(std::string(1, m.plain), modifiers);
 }
 
-// CSI <code> [; <mods>] u
-std::string kittyKey(unsigned code, unsigned modifiers) {
-    const unsigned mod = modifierParameter(modifiers);
-    std::string s = "\x1b[" + std::to_string(code);
-    if (mod > 1) {
-        s += ";" + std::to_string(mod);
+// The kitty protocol's general form, serialized like kitty does:
+//   CSI key[:shifted] ; modifiers[:event] ; text-codepoints <trailer>
+// Empty trailing fields are left out; key 1 (functional keys with a letter trailer) is implied.
+struct KittyFields {
+    unsigned key = 1;
+    char32_t shifted = 0;
+    unsigned modifiers = NoModifier;
+    KeyAction action = KeyAction::Press;
+    bool reportAction = false;
+    std::u32string text;
+    char trailer = 'u';
+};
+
+std::string serializeKitty(const KittyFields& f) {
+    const bool addAction = f.reportAction && f.action != KeyAction::Press;
+    const bool second = f.modifiers != NoModifier || addAction;
+    const bool third = !f.text.empty();
+    std::string s = "\x1b[";
+    if (f.key != 1 || f.shifted || second || third) {
+        s += std::to_string(f.key);
     }
-    return s + "u";
+    if (f.shifted) {
+        s += ':' + std::to_string(static_cast<unsigned>(f.shifted));
+    }
+    if (second || third) {
+        s += ';';
+        if (second) {
+            s += std::to_string(modifierParameter(f.modifiers));
+            if (addAction) {
+                s += f.action == KeyAction::Repeat ? ":2" : ":3";
+            }
+        }
+    }
+    if (third) {
+        s += ';';
+        for (std::size_t i = 0; i < f.text.size(); ++i) {
+            s += (i ? ":" : "") + std::to_string(static_cast<unsigned>(f.text[i]));
+        }
+    }
+    s += f.trailer;
+    return s;
+}
+
+// Repeats look like presses and releases are not sent unless events are reported.
+std::optional<KeyAction> effectiveAction(KeyAction action, const KeyboardModes& modes) {
+    if (modes.kittyFlags & KittyReportEvents) {
+        return action;
+    }
+    if (action == KeyAction::Release) {
+        return std::nullopt;
+    }
+    return KeyAction::Press;
 }
 
 // Enter, Tab, Backspace and Escape under the kitty protocol, or nullopt for the legacy encoding.
-std::optional<std::string> kittyTextKey(Key key, unsigned modifiers, const KeyboardModes& modes) {
+std::optional<std::string> kittyTextKey(Key key, unsigned modifiers, const KeyboardModes& modes, KeyAction action) {
     unsigned code = 0;
     switch (key) {
     case Key::Enter: code = 13; break;
@@ -94,18 +138,77 @@ std::optional<std::string> kittyTextKey(Key key, unsigned modifiers, const Keybo
     if (!all && !(modes.kittyFlags & KittyDisambiguate)) {
         return std::nullopt;
     }
-    if (all || key == Key::Escape || modifiers != NoModifier) {
-        return kittyKey(code, modifiers);
+    if (!all && key != Key::Escape && modifiers == NoModifier) {
+        return std::nullopt; // the legacy CR / TAB / DEL
     }
-    return std::nullopt;
+    // Enter, Tab and Backspace releases need "report all keys", so that typing `reset` still works
+    // after a program left the terminal in this mode.
+    if (action == KeyAction::Release && !all && key != Key::Escape) {
+        return std::string();
+    }
+    KittyFields fields;
+    fields.key = code;
+    fields.modifiers = modifiers;
+    fields.action = action;
+    fields.reportAction = modes.kittyFlags & KittyReportEvents;
+    return serializeKitty(fields);
+}
+
+// Repeat/release events of functional keys (cursor keys, editing keys, F1-F12).
+std::string kittyFunctionalEvent(Key key, unsigned modifiers, KeyAction action) {
+    KittyFields fields;
+    fields.modifiers = modifiers;
+    fields.action = action;
+    fields.reportAction = true;
+    auto letter = [&](char trailer) {
+        fields.trailer = trailer;
+        return serializeKitty(fields);
+    };
+    auto tilde = [&](unsigned number) {
+        fields.key = number;
+        fields.trailer = '~';
+        return serializeKitty(fields);
+    };
+    switch (key) {
+    case Key::Up: return letter('A');
+    case Key::Down: return letter('B');
+    case Key::Right: return letter('C');
+    case Key::Left: return letter('D');
+    case Key::Home: return letter('H');
+    case Key::End: return letter('F');
+    case Key::F1: return letter('P');
+    case Key::F2: return letter('Q');
+    case Key::F3: return tilde(13);
+    case Key::F4: return letter('S');
+    case Key::Insert: return tilde(2);
+    case Key::Delete: return tilde(3);
+    case Key::PageUp: return tilde(5);
+    case Key::PageDown: return tilde(6);
+    case Key::F5: return tilde(15);
+    case Key::F6: return tilde(17);
+    case Key::F7: return tilde(18);
+    case Key::F8: return tilde(19);
+    case Key::F9: return tilde(20);
+    case Key::F10: return tilde(21);
+    case Key::F11: return tilde(23);
+    case Key::F12: return tilde(24);
+    default: return {}; // keypad keys use their legacy encodings, which have no events
+    }
 }
 
 } // namespace
 
-std::string encodeKey(Key key, unsigned modifiers, const KeyboardModes& modes) {
+std::string encodeKey(Key key, unsigned modifiers, const KeyboardModes& modes, KeyAction requested) {
+    const auto action = effectiveAction(requested, modes);
+    if (!action) {
+        return {};
+    }
     const bool app = modes.cursorKeysApplication;
-    if (auto kitty = kittyTextKey(key, modifiers, modes)) {
+    if (auto kitty = kittyTextKey(key, modifiers, modes, *action)) {
         return *kitty;
+    }
+    if (*action != KeyAction::Press) {
+        return kittyFunctionalEvent(key, modifiers, *action);
     }
     switch (key) {
     case Key::Enter: return withAlt(modes.newLineMode ? "\r\n" : "\r", modifiers);
@@ -177,13 +280,36 @@ std::string encodeChar(char32_t ch, unsigned modifiers) {
     return withAlt(std::move(bytes), modifiers);
 }
 
-std::string encodeCharKey(char32_t ch, unsigned modifiers, const KeyboardModes& modes) {
+std::string encodeCharKey(char32_t ch, unsigned modifiers, const KeyboardModes& modes, const KeyEventInfo& event) {
+    const auto action = effectiveAction(event.action, modes);
+    if (!action) {
+        return {};
+    }
+    const unsigned flags = modes.kittyFlags;
     const unsigned chordMods = modifiers & (ControlModifier | AltModifier | MetaModifier);
     // Kitty reports the unshifted key; for letters that is the lower-case form.
     const char32_t base = (ch >= U'A' && ch <= U'Z') ? ch - U'A' + U'a' : ch;
-    if ((modes.kittyFlags & KittyReportAllKeys) ||
-        ((modes.kittyFlags & KittyDisambiguate) && chordMods != NoModifier)) {
-        return kittyKey(static_cast<unsigned>(base), modifiers);
+    const bool all = flags & KittyReportAllKeys;
+    if (all || ((flags & KittyDisambiguate) && chordMods != NoModifier)) {
+        KittyFields fields;
+        fields.key = static_cast<unsigned>(base);
+        fields.modifiers = modifiers;
+        fields.action = *action;
+        fields.reportAction = flags & KittyReportEvents;
+        if ((flags & KittyReportAlternates) && (modifiers & ShiftModifier) && event.shifted && event.shifted != base) {
+            fields.shifted = event.shifted;
+        }
+        if (all && (flags & KittyReportText) && *action != KeyAction::Release) {
+            for (const char32_t cp : event.text) {
+                if (cp >= 0x20 && cp != 0x7F) { // control characters are not text
+                    fields.text += cp;
+                }
+            }
+        }
+        return serializeKitty(fields);
+    }
+    if (*action == KeyAction::Release) {
+        return {}; // keys sent as text have no release events
     }
     if (modes.modifyOtherKeys > 0 && chordMods != NoModifier && ch >= 0x20 && ch != 0x7F) {
         // Level 1 only rewrites Control chords without a C0 equivalent (e.g. Ctrl+, or
@@ -202,6 +328,29 @@ std::string encodeCharKey(char32_t ch, unsigned modifiers, const KeyboardModes& 
         }
     }
     return encodeChar(ch, modifiers & ~(ShiftModifier | MetaModifier));
+}
+
+std::string encodeModifierKey(ModifierKey key, unsigned modifiers, const KeyboardModes& modes, KeyAction requested) {
+    if (!(modes.kittyFlags & KittyReportAllKeys)) {
+        return {};
+    }
+    const auto action = effectiveAction(requested, modes);
+    if (!action) {
+        return {};
+    }
+    KittyFields fields;
+    switch (key) {
+    case ModifierKey::Shift: fields.key = 57441; break; // left variants: the side is not known
+    case ModifierKey::Control: fields.key = 57442; break;
+    case ModifierKey::Alt: fields.key = 57443; break;
+    case ModifierKey::Super: fields.key = 57444; break;
+    case ModifierKey::CapsLock: fields.key = 57358; break;
+    case ModifierKey::NumLock: fields.key = 57360; break;
+    }
+    fields.modifiers = modifiers;
+    fields.action = *action;
+    fields.reportAction = modes.kittyFlags & KittyReportEvents;
+    return serializeKitty(fields);
 }
 
 std::string encodePaste(std::string_view text, bool bracketed) {

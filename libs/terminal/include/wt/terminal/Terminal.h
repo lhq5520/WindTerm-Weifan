@@ -40,6 +40,7 @@ struct TerminalModes {
     bool focusEvents = false;           // ?1004
     bool alternateScroll = true;        // ?1007: wheel sends cursor keys on the alternate screen
     bool synchronizedOutput = false;    // ?2026: the view should hold repaints until reset
+    bool graphemeClusters = false;      // ?2027: emoji ZWJ sequences, flags, skin tones are one cell pair
     int modifyOtherKeys = 0;            // XTMODKEYS (CSI > 4 ; n m): 0, 1 or 2
     MouseTracking mouseTracking = MouseTracking::None;
     MouseEncoding mouseEncoding = MouseEncoding::Default;
@@ -212,6 +213,10 @@ private:
     // mapped through the rewrap, like the cursor.
     void reflowPrimary(int rows, int columns, int& cursorRow, int& cursorColumn, std::vector<GridPoint*> tracked);
     void appendCombining(char32_t mark);
+    // Mode 2027: adds `cp` to the previous grapheme cluster when it continues it; true if it did.
+    bool joinCluster(char32_t cp);
+    // Mode 2027: makes the just-printed narrow cell at `col` two cells wide (emoji presentation).
+    void widenCell(int col);
     std::optional<std::uint32_t> internCluster(const std::u32string& text);
 
     // Selection helpers

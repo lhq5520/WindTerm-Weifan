@@ -377,7 +377,7 @@ void SftpPanel::uploadFiles(const QStringList& localFiles) {
     }
     for (const QString& local : localFiles) {
         const QFileInfo info(local);
-        if (!info.isFile()) {
+        if (!info.isFile() && !info.isDir()) {
             Q_EMIT operationFinished(false, tr("%1 is not a file").arg(local));
             continue;
         }
@@ -385,24 +385,27 @@ void SftpPanel::uploadFiles(const QStringList& localFiles) {
         QPointer<SftpPanel> self(this);
         const std::string remote = wt::ssh::joinRemotePath(m_path.toStdString(), info.fileName().toStdString());
         const std::string localPath = local.toStdString();
+        const bool directory = info.isDir();
         worker->transferCancelled = false;
         enqueue(
             tr("Uploading %1...").arg(info.fileName()),
-            [worker, self, remote, localPath] {
-                return worker->sftp->upload(localPath, remote, [self, worker](std::uint64_t done, std::uint64_t total) {
+            [worker, self, remote, localPath, directory] {
+                const auto progress = [self, worker](std::uint64_t done, std::uint64_t total) {
                     QMetaObject::invokeMethod(QCoreApplication::instance(), [self, done, total] {
                         if (SftpPanel* panel = self.data()) {
                             panel->onProgress(done, total);
                         }
                     });
                     return !worker->transferCancelled.load();
-                });
+                };
+                return directory ? worker->sftp->uploadTree(localPath, remote, progress)
+                                 : worker->sftp->upload(localPath, remote, progress);
             },
             [this] { refresh(); });
     }
 }
 
-void SftpPanel::download(const QString& remoteName, const QString& localPath) {
+void SftpPanel::download(const QString& remoteName, const QString& localPath, bool directory) {
     if (!m_worker || !m_connected) {
         Q_EMIT operationFinished(false, tr("Not connected"));
         return;
@@ -412,23 +415,26 @@ void SftpPanel::download(const QString& remoteName, const QString& localPath) {
     const std::string remote = wt::ssh::joinRemotePath(m_path.toStdString(), remoteName.toStdString());
     const std::string local = localPath.toStdString();
     worker->transferCancelled = false;
-    enqueue(tr("Downloading %1...").arg(remoteName), [worker, self, remote, local] {
-        return worker->sftp->download(remote, local, [self, worker](std::uint64_t done, std::uint64_t total) {
+    enqueue(tr("Downloading %1...").arg(remoteName), [worker, self, remote, local, directory] {
+        const auto progress = [self, worker](std::uint64_t done, std::uint64_t total) {
             QMetaObject::invokeMethod(QCoreApplication::instance(), [self, done, total] {
                 if (SftpPanel* panel = self.data()) {
                     panel->onProgress(done, total);
                 }
             });
             return !worker->transferCancelled.load();
-        });
+        };
+        return directory ? worker->sftp->downloadTree(remote, local, progress)
+                         : worker->sftp->download(remote, local, progress);
     });
 }
 
 void SftpPanel::downloadSelected(const QString& localDirectory) {
     for (QTreeWidgetItem* item : m_list->selectedItems()) {
-        if (!item->data(0, Qt::UserRole).toBool()) {
-            download(item->text(0), QDir(localDirectory).filePath(item->text(0)));
+        if (item->text(0) == QLatin1String("..")) {
+            continue;
         }
+        download(item->text(0), QDir(localDirectory).filePath(item->text(0)), item->data(0, Qt::UserRole).toBool());
     }
 }
 

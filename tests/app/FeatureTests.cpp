@@ -238,6 +238,22 @@ private Q_SLOTS:
         QCOMPARE(countOnScreen(*second->session(), QStringLiteral("solo-1")), 0);
     }
 
+    void kittyReleaseAndModifierEventsReachTheProgram() {
+        // flags 11 = disambiguate | report events | report all keys
+        auto w = window(makeContext(), QStringLiteral("stty -icanon -echo; printf '\\033[>11uREADY\\n'; printf 'got:'; "
+                                                      "head -c 24 | cat -v; echo; exec sleep 30"));
+        QVERIFY(w);
+        TerminalPane* pane = w->activePane();
+        TerminalWidget* view = pane->terminal();
+        view->setFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(screenContains(*pane->session(), QStringLiteral("READY")), 5000);
+        QCOMPARE(pane->session()->terminal().kittyKeyboardFlags(), 11u);
+        QTest::keyPress(view, Qt::Key_A);                         // CSI 97 u
+        QTest::keyRelease(view, Qt::Key_A);                       // CSI 97 ; 1:3 u
+        QTest::keyPress(view, Qt::Key_Shift, Qt::ShiftModifier);  // CSI 57441 ; 2 u
+        QTRY_VERIFY_WITH_TIMEOUT(screenContains(*pane->session(), QStringLiteral("got:^[[97u^[[97;1:3u^[[57441;2u")), 5000);
+    }
+
     void chineseTranslationIsComplete() {
         QCOMPARE(Translations::install(qApp, QStringLiteral("zh_CN")), QStringLiteral("zh_CN"));
         {

@@ -311,6 +311,38 @@ WT_TEST(ssh_agent_and_password_authentication) {
     WT_CHECK_EQ(stranger.passphrasePrompts, 0);
 }
 
+WT_TEST(ssh_certificate_authentication) {
+    auto* sshd = server();
+    if (!sshd) {
+        return;
+    }
+    if (!sshd->certificatesAvailable()) {
+        std::fprintf(stderr, "    SKIP: ssh-keygen cannot sign certificates\n");
+        return;
+    }
+    auto options = baseOptions(*sshd);
+    options.identityFile = sshd->certifiedKey(); // only its certificate is trusted
+    std::string error;
+    ScriptedUi ui;
+    auto connection = connectLogged(options, ui, &error); // finds certified_key-cert.pub next to it
+    WT_REQUIRE(connection != nullptr);
+    WT_CHECK_EQ(connection->authMethodUsed(), std::string("publickey (certificate)"));
+    connection.reset();
+
+    // An explicit certificate path works as well...
+    const std::string moved = sshd->dir() + "/elsewhere-cert.pub";
+    std::filesystem::rename(sshd->certifiedKey() + "-cert.pub", moved);
+    options.certificateFile = moved;
+    ScriptedUi explicitUi;
+    WT_CHECK(connectLogged(options, explicitUi, &error) != nullptr);
+    // ... and without the certificate the bare key is refused.
+    options.certificateFile.clear();
+    ScriptedUi bareUi;
+    WT_CHECK(!ssh::SshConnection::connect(options, bareUi, &error));
+    WT_CHECK(error.find("Authentication failed") != std::string::npos);
+    std::filesystem::rename(moved, sshd->certifiedKey() + "-cert.pub");
+}
+
 WT_TEST(ssh_exec_and_interactive_shell) {
     auto* sshd = server();
     if (!sshd) {
@@ -344,6 +376,58 @@ WT_TEST(ssh_exec_and_interactive_shell) {
     WT_REQUIRE(sink.waitClosed());
     WT_CHECK_EQ(sink.exitStatus, 7);
     WT_CHECK(sink.error.empty());
+}
+
+WT_TEST(ssh_sftp_directory_trees) {
+    auto* sshd = server();
+    if (!sshd) {
+        return;
+    }
+    namespace fs = std::filesystem;
+    const fs::path local = fs::path(sshd->dir()) / "tree-local";
+    fs::create_directories(local / "sub" / "deeper");
+    fs::create_directories(local / "empty");
+    WT_REQUIRE(platform::writeFileAtomic((local / "a.txt").string(), "alpha").isOk());
+    WT_REQUIRE(platform::writeFileAtomic((local / "sub" / "b.bin").string(), randomBytes(300000)).isOk());
+    WT_REQUIRE(platform::writeFileAtomic((local / "sub" / "deeper" / "c.txt").string(), "gamma").isOk());
+    fs::create_directory_symlink(local, local / "sub" / "loop"); // must not recurse forever
+
+    ScriptedUi ui;
+    std::string error;
+    auto connection = connectLogged(baseOptions(*sshd), ui, &error);
+    WT_REQUIRE(connection != nullptr);
+    auto sftp = connection->openSftp(&error);
+    WT_REQUIRE(sftp != nullptr);
+    const std::string remote = sshd->dir() + "/tree-remote"; // the server shares our file system
+    std::uint64_t lastDone = 0;
+    std::uint64_t lastTotal = 0;
+    WT_REQUIRE(sftp->uploadTree(local.string(), remote, [&](std::uint64_t done, std::uint64_t total) {
+                       lastDone = done;
+                       lastTotal = total;
+                       return true;
+                   }).isOk());
+    WT_CHECK_EQ(lastTotal, std::uint64_t(300010));
+    WT_CHECK_EQ(lastDone, lastTotal);
+    WT_CHECK(*platform::readFile(remote + "/sub/deeper/c.txt") == "gamma");
+    WT_CHECK(platform::readFile(remote + "/sub/b.bin")->size() == 300000u);
+    WT_CHECK(fs::is_directory(remote + "/empty"));
+    WT_CHECK(!fs::exists(remote + "/sub/loop"));
+    // Uploading again reuses the directories and overwrites the files.
+    WT_REQUIRE(platform::writeFileAtomic((local / "a.txt").string(), "alpha-2").isOk());
+    WT_REQUIRE(sftp->uploadTree(local.string(), remote).isOk());
+    WT_CHECK(*platform::readFile(remote + "/a.txt") == "alpha-2");
+
+    const fs::path back = fs::path(sshd->dir()) / "tree-back";
+    WT_REQUIRE(sftp->downloadTree(remote, back.string()).isOk());
+    WT_CHECK(*platform::readFile((back / "a.txt").string()) == "alpha-2");
+    WT_CHECK(*platform::readFile((back / "sub" / "b.bin").string()) == *platform::readFile((local / "sub" / "b.bin").string()));
+    WT_CHECK(fs::is_directory(back / "empty"));
+    // Cancelling stops the transfer with an error.
+    const auto cancelled = sftp->downloadTree(remote, (fs::path(sshd->dir()) / "tree-cancel").string(),
+                                              [](std::uint64_t, std::uint64_t) { return false; });
+    WT_CHECK(!cancelled.isOk());
+    WT_CHECK(cancelled.message().find("cancelled") != std::string::npos);
+    WT_CHECK(!sftp->uploadTree((local / "a.txt").string(), remote + "/x").isOk()); // not a directory
 }
 
 WT_TEST(ssh_sftp_file_operations) {

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <random>
 
@@ -290,6 +291,151 @@ core::Status SftpSession::upload(const std::string& localPath, const std::string
         status = failure("cannot finish writing", remotePath);
     }
     return status;
+}
+
+namespace {
+
+// Adds the bytes of earlier files to a per-file progress callback.
+TransferProgress offsetProgress(const TransferProgress& progress, std::uint64_t base, std::uint64_t total) {
+    if (!progress) {
+        return {};
+    }
+    return [progress, base, total](std::uint64_t done, std::uint64_t) { return progress(base + done, total); };
+}
+
+} // namespace
+
+core::Status SftpSession::uploadTree(const std::string& localDirectory, const std::string& remoteDirectory,
+                                     const TransferProgress& progress) {
+    namespace fs = std::filesystem;
+    const fs::path root = platform::pathFromUtf8(localDirectory);
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        return core::Status::error(localDirectory + " is not a directory");
+    }
+    // Collect first: the total size drives the progress, and nothing is created on errors here.
+    struct Item {
+        std::string relative; // with '/' separators
+        bool directory;
+        std::uint64_t size;
+    };
+    std::vector<Item> items;
+    std::uint64_t total = 0;
+    for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::none, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        const fs::directory_entry& entry = *it;
+        if (entry.is_symlink(ec)) {
+            if (entry.is_directory(ec)) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        std::string relative = platform::pathToUtf8(fs::relative(entry.path(), root, ec));
+        std::replace(relative.begin(), relative.end(), '\\', '/');
+        if (entry.is_directory(ec)) {
+            items.push_back({relative, true, 0});
+        } else if (entry.is_regular_file(ec)) {
+            const auto size = entry.file_size(ec);
+            items.push_back({relative, false, ec ? 0 : size});
+            total += ec ? 0 : size;
+        }
+    }
+    if (ec) {
+        return core::Status::error("cannot read " + localDirectory + ": " + ec.message());
+    }
+    auto ensureDirectory = [this](const std::string& path) {
+        SftpEntry existing;
+        if (stat(path, existing) && existing.isDirectory) {
+            return core::Status::ok();
+        }
+        return makeDirectory(path);
+    };
+    if (auto status = ensureDirectory(remoteDirectory); !status) {
+        return status;
+    }
+    std::uint64_t done = 0;
+    for (const Item& item : items) {
+        const std::string remote = joinRemotePath(remoteDirectory, item.relative);
+        if (item.directory) {
+            if (auto status = ensureDirectory(remote); !status) {
+                return status;
+            }
+            continue;
+        }
+        const std::string local = platform::pathToUtf8(root / platform::pathFromUtf8(item.relative));
+        if (auto status = upload(local, remote, offsetProgress(progress, done, total)); !status) {
+            return status;
+        }
+        done += item.size;
+        if (progress && !progress(done, total)) {
+            return core::Status::error("transfer cancelled");
+        }
+    }
+    return core::Status::ok();
+}
+
+core::Status SftpSession::downloadTree(const std::string& remoteDirectory, const std::string& localDirectory,
+                                       const TransferProgress& progress) {
+    namespace fs = std::filesystem;
+    // Walk the remote tree first (breadth first, links skipped).
+    struct Item {
+        std::string relative;
+        bool directory;
+        std::uint64_t size;
+    };
+    std::vector<Item> items;
+    std::uint64_t total = 0;
+    std::vector<std::string> pending{""};
+    while (!pending.empty()) {
+        const std::string relative = pending.back();
+        pending.pop_back();
+        std::vector<SftpEntry> entries;
+        if (auto status = list(relative.empty() ? remoteDirectory : joinRemotePath(remoteDirectory, relative), entries);
+            !status) {
+            return status;
+        }
+        for (const SftpEntry& entry : entries) {
+            if (entry.name == "." || entry.name == ".." || entry.isSymlink) {
+                continue;
+            }
+            const std::string child = relative.empty() ? entry.name : relative + "/" + entry.name;
+            items.push_back({child, entry.isDirectory, entry.size});
+            if (entry.isDirectory) {
+                pending.push_back(child);
+            } else {
+                total += entry.size;
+            }
+        }
+    }
+    const fs::path root = platform::pathFromUtf8(localDirectory);
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    if (ec) {
+        return core::Status::error("cannot create " + localDirectory + ": " + ec.message());
+    }
+    // Directories before the files inside them.
+    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.directory && !b.directory; });
+    std::uint64_t done = 0;
+    for (const Item& item : items) {
+        const fs::path local = root / platform::pathFromUtf8(item.relative);
+        if (item.directory) {
+            fs::create_directories(local, ec);
+            if (ec) {
+                return core::Status::error("cannot create " + platform::pathToUtf8(local) + ": " + ec.message());
+            }
+            continue;
+        }
+        if (auto status = download(joinRemotePath(remoteDirectory, item.relative), platform::pathToUtf8(local),
+                                   offsetProgress(progress, done, total));
+            !status) {
+            return status;
+        }
+        done += item.size;
+        if (progress && !progress(done, total)) {
+            return core::Status::error("transfer cancelled");
+        }
+    }
+    return core::Status::ok();
 }
 
 } // namespace wt::ssh

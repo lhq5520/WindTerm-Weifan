@@ -195,6 +195,9 @@ QWidget* SessionEditDialog::createSshPage() {
     auto* keyRow = new QHBoxLayout;
     keyRow->addWidget(m_identity, 1);
     keyRow->addWidget(browse);
+    m_certificate = new QLineEdit(QString::fromStdString(ssh.certificateFile), page);
+    m_certificate->setObjectName(QStringLiteral("certificate"));
+    m_certificate->setPlaceholderText(tr("Optional: <key>-cert.pub is used when it exists"));
     m_secret = new QLineEdit(page);
     m_secret->setObjectName(QStringLiteral("secret"));
     m_secret->setEchoMode(QLineEdit::Password);
@@ -217,6 +220,7 @@ QWidget* SessionEditDialog::createSshPage() {
     form->addRow(tr("User:"), m_user);
     form->addRow(tr("Authentication:"), m_auth);
     form->addRow(tr("Private key:"), keyRow);
+    form->addRow(tr("Certificate:"), m_certificate);
     form->addRow(tr("Password / passphrase:"), m_secret);
     form->addRow(QString(), m_storeSecret);
     form->addRow(tr("Keep-alive interval:"), m_keepAlive);
@@ -562,6 +566,7 @@ SessionProfile SessionEditDialog::profile() const {
     p.ssh.username = m_user->text().trimmed().toStdString();
     p.ssh.auth = static_cast<AuthMethod>(m_auth->currentData().toInt());
     p.ssh.identityFile = m_identity->text().trimmed().toStdString();
+    p.ssh.certificateFile = m_certificate->text().trimmed().toStdString();
     if (!m_storeSecret->isChecked()) {
         p.ssh.credentialId.clear();
     } else if (!m_credentialId.empty()) {

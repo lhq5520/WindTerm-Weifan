@@ -23,15 +23,25 @@ enum Modifier : unsigned {
     MetaModifier = 1u << 3,
 };
 
-// Kitty keyboard protocol flags (https://sw.kovidgoyal.net/kitty/keyboard-protocol/). Only
-// "disambiguate" and "report all keys as escape codes" change what is sent; the other flags are
-// tracked and reported but need key-release / text information this encoder does not have.
+// Kitty keyboard protocol flags (https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
 enum KittyKeyboardFlag : unsigned {
-    KittyDisambiguate = 1u << 0,
-    KittyReportEvents = 1u << 1,
-    KittyReportAlternates = 1u << 2,
-    KittyReportAllKeys = 1u << 3,
-    KittyReportText = 1u << 4,
+    KittyDisambiguate = 1u << 0,     // escape codes for ambiguous keys and chords
+    KittyReportEvents = 1u << 1,     // repeat and release events
+    KittyReportAlternates = 1u << 2, // the shifted key next to the base key
+    KittyReportAllKeys = 1u << 3,    // every key (also text and modifier keys) as an escape code
+    KittyReportText = 1u << 4,       // the text a key produces (with ReportAllKeys)
+};
+
+enum class KeyAction { Press, Repeat, Release };
+
+// Modifier keys pressed on their own (reported with KittyReportAllKeys only).
+enum class ModifierKey { Shift, Control, Alt, Super, CapsLock, NumLock };
+
+// What a character key produced, for the kitty protocol's alternates and text fields.
+struct KeyEventInfo {
+    KeyAction action = KeyAction::Press;
+    char32_t shifted = 0;  // the shifted form of the key (e.g. 'A' for Shift+a), 0 if none
+    std::u32string text;   // text the key generated (empty for releases and chords)
 };
 
 struct KeyboardModes {
@@ -43,15 +53,20 @@ struct KeyboardModes {
 };
 
 // Translates keyboard input into the byte sequences xterm sends to the application.
-// Modifier encoding follows xterm's "CSI 1 ; <1 + mods> X" convention.
-std::string encodeKey(Key key, unsigned modifiers, const KeyboardModes& modes);
+// Modifier encoding follows xterm's "CSI 1 ; <1 + mods> X" convention. Repeats are sent like
+// presses and releases are dropped unless the kitty "report events" flag asks for them.
+std::string encodeKey(Key key, unsigned modifiers, const KeyboardModes& modes, KeyAction action = KeyAction::Press);
 
 // Encodes a typed character. Control maps letters and @[\]^_? to C0 codes; Alt prefixes ESC.
 std::string encodeChar(char32_t ch, unsigned modifiers);
 
 // Encodes a character key honouring the kitty keyboard protocol and xterm's modifyOtherKeys
 // (CSI 27 ; mods ; code ~); falls back to encodeChar().
-std::string encodeCharKey(char32_t ch, unsigned modifiers, const KeyboardModes& modes);
+std::string encodeCharKey(char32_t ch, unsigned modifiers, const KeyboardModes& modes, const KeyEventInfo& event = {});
+
+// A modifier key on its own: an escape code under KittyReportAllKeys, nothing otherwise.
+// `modifiers` is the state after the event (Shift is set while Shift is held, clear on release).
+std::string encodeModifierKey(ModifierKey key, unsigned modifiers, const KeyboardModes& modes, KeyAction action);
 
 // Prepares clipboard text for the PTY: newlines become CR (like typing Enter) and, in bracketed
 // paste mode, the text is wrapped in ESC[200~ ... ESC[201~ with embedded end markers removed.

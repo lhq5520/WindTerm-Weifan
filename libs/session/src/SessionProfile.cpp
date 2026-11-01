@@ -225,6 +225,7 @@ core::Json SessionProfile::toJson() const {
         s["username"] = ssh.username;
         s["auth"] = toName(kAuthMethods, ssh.auth);
         s["identityFile"] = ssh.identityFile;
+        s["certificateFile"] = ssh.certificateFile;
         s["credentialId"] = ssh.credentialId;
         s["connectTimeoutSeconds"] = ssh.connectTimeoutSeconds;
         s["keepAliveSeconds"] = ssh.keepAliveSeconds;
@@ -292,6 +293,7 @@ std::optional<SessionProfile> SessionProfile::fromJson(const core::Json& json, s
     }
     p.ssh.auth = *auth;
     p.ssh.identityFile = s["identityFile"].toString();
+    p.ssh.certificateFile = s["certificateFile"].toString();
     p.ssh.credentialId = s["credentialId"].toString();
     p.ssh.connectTimeoutSeconds = intFrom(s["connectTimeoutSeconds"], 15, 1, 600);
     p.ssh.keepAliveSeconds = intFrom(s["keepAliveSeconds"], 30, 0, 3600);

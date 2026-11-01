@@ -73,6 +73,7 @@ struct SshSettings {
     std::string username;
     AuthMethod auth = AuthMethod::Auto;
     std::string identityFile;  // private key for PublicKey (and Auto)
+    std::string certificateFile; // OpenSSH certificate; empty: "<identityFile>-cert.pub" if present
     std::string credentialId;  // vault entry holding the password or key passphrase
     int connectTimeoutSeconds = 15;
     int keepAliveSeconds = 30; // 0 disables keep-alives

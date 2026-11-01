@@ -47,6 +47,13 @@ public:
     // Copies a local file to `remotePath` (created/truncated with mode 0644).
     core::Status upload(const std::string& localPath, const std::string& remotePath,
                         const TransferProgress& progress = {});
+    // Whole directories: regular files and subdirectories (symbolic links are skipped, so a link
+    // to a parent cannot loop). Existing directories are reused, files overwritten. Progress
+    // counts the bytes of the whole tree.
+    core::Status uploadTree(const std::string& localDirectory, const std::string& remoteDirectory,
+                            const TransferProgress& progress = {});
+    core::Status downloadTree(const std::string& remoteDirectory, const std::string& localDirectory,
+                              const TransferProgress& progress = {});
 
 private:
     friend class SshConnection;

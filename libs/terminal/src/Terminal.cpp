@@ -1127,6 +1127,9 @@ void Terminal::print(char32_t cp) {
     if (cp < 0x80 && m_charsets[m_activeCharset] == Charset::DecSpecialGraphics) {
         cp = decSpecialGraphics(cp);
     }
+    if (m_modes.graphemeClusters && cp >= 0x80 && joinCluster(cp)) {
+        return;
+    }
     int width = core::charWidth(cp);
     if (width == 0) {
         appendCombining(cp);
@@ -1241,6 +1244,87 @@ void Terminal::appendCombining(char32_t mark) {
         cell.ch = kClusterBase + *id;
         touchRows(m_cursor.row, m_cursor.row);
     }
+    // Mode 2027: VARIATION SELECTOR-16 asks for emoji presentation, which is two cells wide.
+    if (m_modes.graphemeClusters && mark == 0xFE0F) {
+        widenCell(col);
+    }
+}
+
+void Terminal::widenCell(int col) {
+    Line& line = currentLine();
+    Cell& cell = line.cells[static_cast<std::size_t>(col)];
+    // Only the cell just printed, with room to its right (at the margin it stays narrow).
+    if (cell.width != 1 || m_pendingWrap || col + 1 != m_cursor.column || col + 1 >= m_columns) {
+        return;
+    }
+    splitWideCharAt(line, col + 1);
+    cell.width = 2;
+    line.cells[static_cast<std::size_t>(col + 1)] = Cell{0, cell.attributes, 0};
+    if (col + 2 >= m_columns) {
+        m_cursor.column = m_columns - 1;
+        m_pendingWrap = m_modes.autoWrap;
+    } else {
+        m_cursor.column = col + 2;
+    }
+    touchRows(m_cursor.row, m_cursor.row);
+}
+
+namespace {
+
+bool isRegionalIndicator(char32_t cp) {
+    return cp >= 0x1F1E6 && cp <= 0x1F1FF;
+}
+
+bool isEmojiModifier(char32_t cp) {
+    return cp >= 0x1F3FB && cp <= 0x1F3FF;
+}
+
+// Extended_Pictographic, approximated by the blocks that hold the emoji.
+bool isPictographic(char32_t cp) {
+    return (cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) || (cp >= 0x2300 && cp <= 0x23FF) ||
+           (cp >= 0x2B00 && cp <= 0x2BFF) || (cp >= 0x2190 && cp <= 0x21FF) || cp == 0x00A9 || cp == 0x00AE ||
+           cp == 0x203C || cp == 0x2049 || cp == 0x2122 || cp == 0x2139 || cp == 0x24C2 || cp == 0x3030 ||
+           cp == 0x303D || cp == 0x3297 || cp == 0x3299 || (cp >= 0x25AA && cp <= 0x25FE) || cp == 0x2934 ||
+           cp == 0x2935;
+}
+
+} // namespace
+
+bool Terminal::joinCluster(char32_t cp) {
+    int col = m_pendingWrap ? m_cursor.column : m_cursor.column - 1;
+    if (col < 0) {
+        return false;
+    }
+    Line& line = currentLine();
+    if (line.cells[static_cast<std::size_t>(col)].width == 0 && col > 0) {
+        --col; // the right half of a wide character
+    }
+    Cell& cell = line.cells[static_cast<std::size_t>(col)];
+    if (cell.width == 0 || cell.ch == 0) {
+        return false;
+    }
+    std::u32string text(cellText(cell));
+    if (text.empty() || text.size() >= kMaxClusterLength) {
+        return false;
+    }
+    const char32_t first = text.front();
+    const char32_t last = text.back();
+    const bool join = (last == 0x200D && isPictographic(cp)) ||                         // ZWJ sequence
+                      (isEmojiModifier(cp) && isPictographic(first) && !isEmojiModifier(last)) || // skin tone
+                      (isRegionalIndicator(cp) && text.size() == 1 && isRegionalIndicator(first)); // flag
+    if (!join) {
+        return false;
+    }
+    text.push_back(cp);
+    const auto id = internCluster(text);
+    if (!id) {
+        return false;
+    }
+    cell.ch = kClusterBase + *id;
+    m_lastPrinted = cp;
+    touchRows(m_cursor.row, m_cursor.row);
+    widenCell(col); // a flag made of two (narrow) regional indicators is an emoji: two cells
+    return true;
 }
 
 void Terminal::execute(std::uint8_t control) {
@@ -1912,6 +1996,7 @@ int Terminal::privateModeState(int mode) const {
     case 1015: return state(m_modes.mouseEncoding == MouseEncoding::Urxvt);
     case 2004: return state(m_modes.bracketedPaste);
     case 2026: return state(m_modes.synchronizedOutput);
+    case 2027: return state(m_modes.graphemeClusters);
     default: return 0;
     }
 }
@@ -1995,6 +2080,7 @@ void Terminal::setPrivateMode(int mode, bool enabled) {
     case 1007: m_modes.alternateScroll = enabled; break;
     case 1015: setEncoding(MouseEncoding::Urxvt); break;
     case 2026: m_modes.synchronizedOutput = enabled; break;
+    case 2027: m_modes.graphemeClusters = enabled; break;
     case 47:
         switchScreen(enabled, false);
         break;

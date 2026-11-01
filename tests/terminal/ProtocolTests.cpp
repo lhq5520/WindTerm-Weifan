@@ -428,6 +428,104 @@ WT_TEST(osc133_shell_integration_marks) {
     WT_CHECK(!t.shellMarks().commandStart);
 }
 
+WT_TEST(grapheme_cluster_mode_2027) {
+    Terminal t(4, 20);
+    Recorder r;
+    r.attach(t);
+    t.feed(CSI "?2027$p"); // DECRQM: known and reset
+    WT_CHECK_EQ(r.responses, std::string(CSI "?2027;2$y"));
+    const std::string family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"; // 👨‍👩‍👧
+    const std::string flag = "\xF0\x9F\x87\xA8\xF0\x9F\x87\xB3";                                     // 🇨🇳
+    const std::string thumb = "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD";                                    // 👍🏽
+    const std::string heart = "\xE2\x9D\xA4\xEF\xB8\x8F";                                            // ❤️
+    // Off: widths add up like wcwidth (what shells assume).
+    t.feed(family);
+    WT_CHECK_EQ(t.cursor().column, 6);
+    t.feed("\r\n" + flag);
+    WT_CHECK_EQ(t.cursor().column, 2);
+    t.feed("\r\n" CSI "?2027h");
+    r.responses.clear();
+    t.feed(CSI "?2027$p");
+    WT_CHECK_EQ(r.responses, std::string(CSI "?2027;1$y"));
+    // On: every sequence is one glyph in two cells.
+    t.feed(family);
+    WT_CHECK_EQ(t.cursor().column, 2);
+    t.feed(flag);
+    WT_CHECK_EQ(t.cursor().column, 4);
+    t.feed(thumb);
+    WT_CHECK_EQ(t.cursor().column, 6);
+    t.feed(heart);
+    WT_CHECK_EQ(t.cursor().column, 8);
+    t.feed("x");
+    WT_CHECK_EQ(t.lineText(2), family + flag + thumb + heart + "x");
+    WT_CHECK_EQ(cellAt(t, 2, 0).width, 2);
+    WT_CHECK_EQ(cellAt(t, 2, 2).width, 2); // the flag
+    WT_CHECK_EQ(cellAt(t, 2, 6).width, 2); // the heart, widened by VS16
+    // Three regional indicators: a flag, then a lone indicator (next cell).
+    t.feed("\r\n" + flag + "\xF0\x9F\x87\xBA");
+    WT_CHECK_EQ(t.cursor().column, 3);
+    // Selection/copy of a joined sequence gives it back whole.
+    t.startSelection({t.screenStart() + 2, 0}, SelectionMode::Character);
+    t.extendSelection({t.screenStart() + 2, 1});
+    WT_CHECK_EQ(t.selectedText(), family);
+    // A sequence at the right margin stays narrow rather than overflowing.
+    Terminal edge(2, 3);
+    edge.feed(CSI "?2027h" "ab\xE2\x9D\xA4\xEF\xB8\x8F");
+    WT_CHECK_EQ(cellAt(edge, 0, 2).width, 1);
+    edge.feed(ESC "c"); // RIS turns the mode off
+    r.responses.clear();
+    edge.setResponseHandler([&](std::string_view bytes) { r.responses.append(bytes); });
+    edge.feed(CSI "?2027$p");
+    WT_CHECK_EQ(r.responses, std::string(CSI "?2027;2$y"));
+}
+
+WT_TEST(kitty_event_types_alternates_and_text) {
+    KeyboardModes events;
+    events.kittyFlags = KittyDisambiguate | KittyReportEvents;
+    WT_CHECK_EQ(encodeKey(Key::Up, NoModifier, events), std::string(CSI "A")); // presses are unchanged
+    WT_CHECK_EQ(encodeKey(Key::Up, NoModifier, events, KeyAction::Repeat), std::string(CSI "1;1:2A"));
+    WT_CHECK_EQ(encodeKey(Key::Up, ShiftModifier, events, KeyAction::Release), std::string(CSI "1;2:3A"));
+    WT_CHECK_EQ(encodeKey(Key::PageUp, NoModifier, events, KeyAction::Release), std::string(CSI "5;1:3~"));
+    WT_CHECK_EQ(encodeKey(Key::F3, NoModifier, events, KeyAction::Release), std::string(CSI "13;1:3~"));
+    WT_CHECK_EQ(encodeKey(Key::Escape, NoModifier, events, KeyAction::Release), std::string(CSI "27;1:3u"));
+    // Enter/Tab/Backspace releases need "report all keys" (so `reset` can still be typed).
+    WT_CHECK_EQ(encodeKey(Key::Enter, NoModifier, events), std::string("\r"));
+    WT_CHECK_EQ(encodeKey(Key::Enter, NoModifier, events, KeyAction::Release), std::string());
+    WT_CHECK_EQ(encodeKey(Key::Backspace, ControlModifier, events, KeyAction::Release), std::string());
+    // Text keys: text on press, no release; chords are escape codes with events.
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, events), std::string("a"));
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, events, {KeyAction::Release, 0, {}}), std::string());
+    WT_CHECK_EQ(encodeCharKey(U'a', ControlModifier, events, {KeyAction::Release, 0, {}}), std::string(CSI "97;5:3u"));
+    WT_CHECK_EQ(encodeCharKey(U'a', ControlModifier, events, {KeyAction::Repeat, 0, {}}), std::string(CSI "97;5:2u"));
+    // Without event reporting, releases vanish and repeats look like presses.
+    const KeyboardModes legacy;
+    WT_CHECK_EQ(encodeKey(Key::Up, NoModifier, legacy, KeyAction::Release), std::string());
+    WT_CHECK_EQ(encodeKey(Key::Up, NoModifier, legacy, KeyAction::Repeat), std::string(CSI "A"));
+    WT_CHECK_EQ(encodeCharKey(U'x', NoModifier, legacy, {KeyAction::Release, 0, {}}), std::string());
+    WT_CHECK_EQ(encodeCharKey(U'x', NoModifier, legacy, {KeyAction::Repeat, 0, U"x"}), std::string("x"));
+
+    // Everything as escape codes, with alternates and text.
+    KeyboardModes all;
+    all.kittyFlags = KittyDisambiguate | KittyReportEvents | KittyReportAlternates | KittyReportAllKeys | KittyReportText;
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, all, {KeyAction::Press, 0, U"a"}), std::string(CSI "97;;97u"));
+    WT_CHECK_EQ(encodeCharKey(U'A', ShiftModifier, all, {KeyAction::Press, U'A', U"A"}), std::string(CSI "97:65;2;65u"));
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, all, {KeyAction::Repeat, 0, U"a"}), std::string(CSI "97;1:2;97u"));
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, all, {KeyAction::Release, 0, U"a"}), std::string(CSI "97;1:3u"));
+    WT_CHECK_EQ(encodeCharKey(U'c', ControlModifier, all, {KeyAction::Press, 0, U"\x03"}), std::string(CSI "99;5u"));
+    WT_CHECK_EQ(encodeCharKey(U'é', NoModifier, all, {KeyAction::Press, 0, U"é"}), std::string(CSI "233;;233u"));
+    WT_CHECK_EQ(encodeKey(Key::Enter, NoModifier, all, KeyAction::Release), std::string(CSI "13;1:3u"));
+    WT_CHECK_EQ(encodeKey(Key::Tab, NoModifier, all), std::string(CSI "9u"));
+    // Modifier keys on their own: the state after the event.
+    WT_CHECK_EQ(encodeModifierKey(ModifierKey::Shift, ShiftModifier, all, KeyAction::Press), std::string(CSI "57441;2u"));
+    WT_CHECK_EQ(encodeModifierKey(ModifierKey::Shift, NoModifier, all, KeyAction::Release), std::string(CSI "57441;1:3u"));
+    WT_CHECK_EQ(encodeModifierKey(ModifierKey::Control, ControlModifier, events, KeyAction::Press), std::string());
+    // Alternates are only reported with Shift.
+    KeyboardModes alternates;
+    alternates.kittyFlags = KittyReportAllKeys | KittyReportAlternates;
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, alternates, {KeyAction::Press, U'A', U"a"}), std::string(CSI "97u"));
+    WT_CHECK_EQ(encodeCharKey(U'a', NoModifier, alternates, {KeyAction::Release, 0, {}}), std::string());
+}
+
 WT_TEST(kitty_f3_avoids_cursor_report_clash) {
     KeyboardModes kitty;
     kitty.kittyFlags = KittyDisambiguate;

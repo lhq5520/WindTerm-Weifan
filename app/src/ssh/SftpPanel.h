@@ -43,7 +43,8 @@ public:
     void refresh();
     void goUp();
     void uploadFiles(const QStringList& localFiles); // into the current directory
-    void download(const QString& remoteName, const QString& localPath);
+    // Downloads a file, or a whole directory when `directory` is set.
+    void download(const QString& remoteName, const QString& localPath, bool directory = false);
     void downloadSelected(const QString& localDirectory);
     void makeDirectory(const QString& name);
     // Removes files and (recursively) directories in the current directory, without asking.
