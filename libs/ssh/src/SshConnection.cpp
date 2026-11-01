@@ -1,5 +1,6 @@
 #include "wt/ssh/SshConnection.h"
 
+#include "Agent.h"
 #include "Libssh2Init.h"
 
 #include "wt/core/Base64.h"
@@ -462,17 +463,74 @@ core::Status SshConnection::verifyHostKey(SshInteraction& ui) {
     return core::Status::ok();
 }
 
-bool SshConnection::tryAgent() {
+namespace {
+
+// Security key (FIDO/U2F) identities are signed by talking to the agent directly: libssh2's own
+// agent code keeps only the bare signature, but these signatures continue with the
+// authenticator's flags and counter, which libssh2 expects verbatim after the format name.
+struct SecurityKeySigner {
+    std::string keyBlob;
+    std::string error;
+
+    static LIBSSH2_USERAUTH_PUBLICKEY_SIGN_FUNC(sign) {
+        (void)session;
+        auto* self = static_cast<SecurityKeySigner*>(*abstract);
+        // The agent may wait for the user to touch the key.
+        const auto blob = detail::agentSign(self->keyBlob,
+                                            std::string_view(reinterpret_cast<const char*>(data), data_len), 0,
+                                            std::chrono::seconds(90), &self->error);
+        if (!blob) {
+            return -1;
+        }
+        std::size_t pos = 0;
+        std::string_view format;
+        if (!detail::readSshString(*blob, pos, format) || !detail::isSecurityKeyType(format)) {
+            self->error = "the agent returned an unexpected signature";
+            return -1;
+        }
+        const std::string_view rest = std::string_view(*blob).substr(pos); // signature, flags, counter
+        // libssh2 releases it with the session's allocator, which is the default malloc/free.
+        auto* copy = static_cast<unsigned char*>(std::malloc(rest.size()));
+        if (!copy) {
+            return -1;
+        }
+        std::memcpy(copy, rest.data(), rest.size());
+        *sig = copy;
+        *sig_len = rest.size();
+        return 0;
+    }
+};
+
+} // namespace
+
+bool SshConnection::tryAgent(SshInteraction& ui) {
     LIBSSH2_AGENT* agent = libssh2_agent_init(m_session);
     if (!agent) {
         return false;
     }
     bool ok = false;
+    bool securityKey = false;
     if (libssh2_agent_connect(agent) == 0 && libssh2_agent_list_identities(agent) == 0) {
         libssh2_agent_publickey* identity = nullptr;
         libssh2_agent_publickey* previous = nullptr;
         while (libssh2_agent_get_identity(agent, &identity, previous) == 0) {
-            if (libssh2_agent_userauth(agent, m_options.username.c_str(), identity) == 0) {
+            const std::string_view blob(reinterpret_cast<const char*>(identity->blob), identity->blob_len);
+            securityKey = detail::isSecurityKeyType(detail::keyBlobType(blob));
+            int rc = 0;
+            if (securityKey) {
+                const std::string comment = identity->comment ? identity->comment : "";
+                ui.info("Authenticating with the security key " + comment + " (touch it if it blinks)");
+                SecurityKeySigner signer{std::string(blob), {}};
+                void* abstract = &signer;
+                rc = libssh2_userauth_publickey(m_session, m_options.username.c_str(), identity->blob,
+                                                identity->blob_len, &SecurityKeySigner::sign, &abstract);
+                if (rc != 0 && !signer.error.empty()) {
+                    m_lastAuthError = "agent: " + signer.error;
+                }
+            } else {
+                rc = libssh2_agent_userauth(agent, m_options.username.c_str(), identity);
+            }
+            if (rc == 0) {
                 ok = true;
                 break;
             }
@@ -482,7 +540,7 @@ bool SshConnection::tryAgent() {
     }
     libssh2_agent_free(agent);
     if (ok) {
-        m_authMethod = "agent";
+        m_authMethod = securityKey ? "agent (security key)" : "agent";
     }
     return ok;
 }
@@ -616,7 +674,7 @@ core::Status SshConnection::authenticate(SshInteraction& ui) {
 
     if (allowed(AuthMethod::Agent) && contains(methods, "publickey")) {
         tried.emplace_back("agent");
-        if (tryAgent()) {
+        if (tryAgent(ui)) {
             return core::Status::ok();
         }
     }

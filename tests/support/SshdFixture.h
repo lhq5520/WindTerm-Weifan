@@ -161,6 +161,12 @@ public:
         ::unsetenv("SSH_AUTH_SOCK");
     }
 
+    // Adds a line to authorized_keys (sshd reads the file on every login).
+    bool authorize(const std::string& line) {
+        const std::string path = m_dir + "/authorized_keys";
+        return static_cast<bool>(platform::writeFileAtomic(path, platform::readFile(path).value_or("") + line + "\n"));
+    }
+
     std::uint16_t port() const { return m_port; }
     const std::string& dir() const { return m_dir; }
     std::string userKey() const { return m_dir + "/user_key"; }

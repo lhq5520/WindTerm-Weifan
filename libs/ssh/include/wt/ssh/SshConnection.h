@@ -96,7 +96,7 @@ private:
     SshConnection() = default;
     core::Status verifyHostKey(SshInteraction& ui);
     core::Status authenticate(SshInteraction& ui);
-    bool tryAgent();
+    bool tryAgent(SshInteraction& ui);
     int tryKeyFile(const std::string& path, SshInteraction& ui, bool& cancelled);
     int tryPassword(SshInteraction& ui, bool& cancelled);
     int tryKeyboardInteractive(SshInteraction& ui, bool& cancelled);

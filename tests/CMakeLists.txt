@@ -33,6 +33,12 @@ endif()
 if(WT_HAVE_SSH AND NOT WIN32)
     wt_add_test(wt_ssh_tests SOURCES ssh/SshTests.cpp LIBS wt::ssh LABELS "integration;ssh")
     set_tests_properties(wt_ssh_tests PROPERTIES TIMEOUT 180)
+    # The security key test signs with Ed25519 in a fake agent.
+    find_package(OpenSSL COMPONENTS Crypto QUIET)
+    if(OpenSSL_FOUND)
+        target_link_libraries(wt_ssh_tests PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(wt_ssh_tests PRIVATE WT_TEST_HAVE_OPENSSL)
+    endif()
     wt_add_test(wt_ssh_forwarding_tests SOURCES ssh/ForwardingTests.cpp ssh/X11Tests.cpp LIBS wt::ssh
                 LABELS "integration;ssh")
     set_tests_properties(wt_ssh_forwarding_tests PROPERTIES TIMEOUT 180)

@@ -8,6 +8,8 @@ add_library(wt_ssh STATIC
     include/wt/ssh/SshShell.h
     include/wt/ssh/SshTypes.h
     include/wt/ssh/X11.h
+    src/Agent.cpp
+    src/Agent.h
     src/Forwarding.cpp
     src/Forwarding.h
     src/KnownHosts.cpp

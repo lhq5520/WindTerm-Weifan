@@ -1,5 +1,6 @@
 #include "Forwarding.h"
 
+#include "Agent.h"
 #include "Libssh2Init.h"
 
 #include "wt/platform/Files.h"
@@ -61,81 +62,6 @@ std::string localHostName() {
 #endif
     return name;
 }
-
-#ifdef _WIN32
-// Windows' OpenSSH agent listens on a named pipe, which poll() cannot wait for: a helper thread
-// relays agent messages (uint32 length + body, strictly request/response) between the pipe and
-// one end of a socket pair.
-core::Status connectAgent(net::Socket& out) {
-    HANDLE pipe = CreateFileW(L"\\\\.\\pipe\\openssh-ssh-agent", GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                              OPEN_EXISTING, 0, nullptr);
-    if (pipe == INVALID_HANDLE_VALUE) {
-        return core::Status::error("cannot connect to the OpenSSH agent (is the ssh-agent service running?)");
-    }
-    auto bridge = std::make_shared<net::Socket>();
-    net::Socket local;
-    if (auto status = net::socketPair(local, *bridge); !status) {
-        CloseHandle(pipe);
-        return status;
-    }
-    std::thread([pipe, bridge] {
-        auto pipeExact = [pipe](char* data, DWORD size, bool reading) {
-            for (DWORD done = 0; done < size;) {
-                DWORD n = 0;
-                const BOOL ok = reading ? ReadFile(pipe, data + done, size - done, &n, nullptr)
-                                        : WriteFile(pipe, data + done, size - done, &n, nullptr);
-                if (!ok || n == 0) {
-                    return false;
-                }
-                done += n;
-            }
-            return true;
-        };
-        std::string message;
-        for (;;) {
-            char header[4];
-            if (!bridge->receiveExact(header, 4)) {
-                break;
-            }
-            const std::uint32_t length = (std::uint32_t(std::uint8_t(header[0])) << 24) |
-                                         (std::uint32_t(std::uint8_t(header[1])) << 16) |
-                                         (std::uint32_t(std::uint8_t(header[2])) << 8) | std::uint8_t(header[3]);
-            if (length > 256 * 1024) {
-                break;
-            }
-            message.assign(header, 4);
-            message.resize(4 + length);
-            if (!bridge->receiveExact(message.data() + 4, length) ||
-                !pipeExact(message.data(), static_cast<DWORD>(message.size()), false) || !pipeExact(header, 4, true)) {
-                break;
-            }
-            const std::uint32_t replyLength = (std::uint32_t(std::uint8_t(header[0])) << 24) |
-                                              (std::uint32_t(std::uint8_t(header[1])) << 16) |
-                                              (std::uint32_t(std::uint8_t(header[2])) << 8) | std::uint8_t(header[3]);
-            if (replyLength > 256 * 1024) {
-                break;
-            }
-            message.assign(header, 4);
-            message.resize(4 + replyLength);
-            if (!pipeExact(message.data() + 4, replyLength, true) || !bridge->sendAll(message)) {
-                break;
-            }
-        }
-        CloseHandle(pipe);
-        bridge->shutdown();
-    }).detach();
-    out = std::move(local);
-    return core::Status::ok();
-}
-#else
-core::Status connectAgent(net::Socket& out) {
-    const char* path = std::getenv("SSH_AUTH_SOCK");
-    if (!path || !*path) {
-        return core::Status::error("SSH_AUTH_SOCK is not set");
-    }
-    return net::connectUnix(path, out);
-}
-#endif
 
 } // namespace
 

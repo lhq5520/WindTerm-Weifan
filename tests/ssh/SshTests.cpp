@@ -10,11 +10,27 @@
 #include "wt/ssh/SshConnection.h"
 #include "wt/ssh/SshShell.h"
 
+#include "wt/core/Base64.h"
+
+#include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <random>
+#include <thread>
+#include <vector>
+
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#ifdef WT_TEST_HAVE_OPENSSL
+#include <openssl/evp.h>
+#endif
 
 using namespace wt;
 using namespace std::chrono_literals;
@@ -309,6 +325,216 @@ WT_TEST(ssh_agent_and_password_authentication) {
     ScriptedUi stranger;
     WT_CHECK(!connectLogged(options, stranger, &error));
     WT_CHECK_EQ(stranger.passphrasePrompts, 0);
+}
+
+#ifdef WT_TEST_HAVE_OPENSSL
+namespace {
+
+std::string sshU32(std::uint32_t value) {
+    return {static_cast<char>(value >> 24), static_cast<char>(value >> 16), static_cast<char>(value >> 8),
+            static_cast<char>(value)};
+}
+std::string sshString(std::string_view value) { return sshU32(static_cast<std::uint32_t>(value.size())) + std::string(value); }
+std::uint32_t sshGetU32(const char* p) {
+    return (std::uint32_t(std::uint8_t(p[0])) << 24) | (std::uint32_t(std::uint8_t(p[1])) << 16) |
+           (std::uint32_t(std::uint8_t(p[2])) << 8) | std::uint8_t(p[3]);
+}
+
+std::string sha256(std::string_view data) {
+    unsigned char digest[32];
+    unsigned int size = 0;
+    EVP_Digest(data.data(), data.size(), digest, &size, EVP_sha256(), nullptr);
+    return std::string(reinterpret_cast<const char*>(digest), size);
+}
+
+// An ssh-agent holding one sk-ssh-ed25519 "security key" in software: it signs the way an
+// authenticator does (Ed25519 over SHA-256(application) || flags || counter || SHA-256(data),
+// see OpenSSH's PROTOCOL.u2f), so sshd verifies real security key signatures.
+class FakeSecurityKeyAgent {
+public:
+    static constexpr const char* kApplication = "ssh:";
+
+    explicit FakeSecurityKeyAgent(std::string path) : m_path(std::move(path)) {}
+    ~FakeSecurityKeyAgent() {
+        m_stop = true;
+        if (m_thread.joinable()) {
+            m_thread.join();
+        }
+        if (m_listener >= 0) {
+            ::close(m_listener);
+        }
+        ::unlink(m_path.c_str());
+        EVP_PKEY_free(m_key);
+    }
+
+    bool start() {
+        EVP_PKEY_CTX* context = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+        const bool generated = context && EVP_PKEY_keygen_init(context) == 1 && EVP_PKEY_keygen(context, &m_key) == 1;
+        EVP_PKEY_CTX_free(context);
+        unsigned char publicKey[32];
+        std::size_t publicKeySize = sizeof(publicKey);
+        if (!generated || EVP_PKEY_get_raw_public_key(m_key, publicKey, &publicKeySize) != 1) {
+            return false;
+        }
+        m_blob = sshString("sk-ssh-ed25519@openssh.com") +
+                 sshString(std::string_view(reinterpret_cast<const char*>(publicKey), publicKeySize)) +
+                 sshString(kApplication);
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        if (m_path.size() >= sizeof(address.sun_path)) {
+            return false;
+        }
+        std::memcpy(address.sun_path, m_path.c_str(), m_path.size() + 1);
+        m_listener = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (m_listener < 0 || ::bind(m_listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+            ::listen(m_listener, 4) != 0) {
+            return false;
+        }
+        m_thread = std::thread([this] { serve(); });
+        return true;
+    }
+
+    std::string authorizedKey() const { return "sk-ssh-ed25519@openssh.com " + core::base64Encode(m_blob) + " fake-sk"; }
+    void setFlags(std::uint8_t flags) { m_flags = flags; }
+    int signatures() const { return m_signatures; }
+
+private:
+    // Serves all connections at once: libssh2 keeps its listing connection open while the
+    // client signs over a second one.
+    void serve() {
+        std::vector<int> clients;
+        while (!m_stop) {
+            std::vector<pollfd> ready{{m_listener, POLLIN, 0}};
+            for (const int client : clients) {
+                ready.push_back({client, POLLIN, 0});
+            }
+            if (::poll(ready.data(), ready.size(), 50) <= 0) {
+                continue;
+            }
+            if (ready[0].revents & POLLIN) {
+                if (const int client = ::accept(m_listener, nullptr, nullptr); client >= 0) {
+                    clients.push_back(client);
+                }
+            }
+            for (std::size_t i = 1; i < ready.size(); ++i) {
+                if ((ready[i].revents & (POLLIN | POLLHUP | POLLERR)) && !answer(ready[i].fd)) {
+                    ::close(ready[i].fd);
+                    clients.erase(std::find(clients.begin(), clients.end(), ready[i].fd));
+                }
+            }
+        }
+        for (const int client : clients) {
+            ::close(client);
+        }
+    }
+
+    static bool readExact(int fd, char* data, std::size_t size) {
+        for (std::size_t done = 0; done < size;) {
+            const ssize_t n = ::read(fd, data + done, size - done);
+            if (n <= 0) {
+                return false;
+            }
+            done += static_cast<std::size_t>(n);
+        }
+        return true;
+    }
+
+    // Answers one request; false when the connection is done.
+    bool answer(int fd) {
+        char header[4];
+        if (!readExact(fd, header, 4)) {
+            return false;
+        }
+        const std::uint32_t length = sshGetU32(header);
+        std::string message(length, '\0');
+        if (length == 0 || length > 65536 || !readExact(fd, message.data(), length)) {
+            return false;
+        }
+        std::string reply = "\x05"; // SSH_AGENT_FAILURE
+        if (message[0] == 11) {     // REQUEST_IDENTITIES -> IDENTITIES_ANSWER
+            reply = "\x0c" + sshU32(1) + sshString(m_blob) + sshString("fake security key");
+        } else if (message[0] == 13 && message.size() >= 9) { // SIGN_REQUEST
+            const std::uint32_t keyLength = sshGetU32(message.data() + 1);
+            if (keyLength <= message.size() - 9 && message.compare(5, keyLength, m_blob) == 0) {
+                const std::size_t dataAt = 5 + keyLength;
+                const std::uint32_t dataLength = sshGetU32(message.data() + dataAt);
+                if (dataLength <= message.size() - dataAt - 4) {
+                    reply = "\x0e" + sshString(sign(std::string_view(message).substr(dataAt + 4, dataLength)));
+                }
+            }
+        }
+        const std::string framed = sshU32(static_cast<std::uint32_t>(reply.size())) + reply;
+        return ::write(fd, framed.data(), framed.size()) == static_cast<ssize_t>(framed.size());
+    }
+
+    std::string sign(std::string_view data) {
+        const std::uint32_t counter = ++m_counter;
+        const std::string signedData = sha256(kApplication) + static_cast<char>(m_flags.load()) + sshU32(counter) + sha256(data);
+        unsigned char signature[64];
+        std::size_t signatureSize = sizeof(signature);
+        EVP_MD_CTX* context = EVP_MD_CTX_new();
+        const bool ok = EVP_DigestSignInit(context, nullptr, nullptr, nullptr, m_key) == 1 &&
+                        EVP_DigestSign(context, signature, &signatureSize,
+                                       reinterpret_cast<const unsigned char*>(signedData.data()), signedData.size()) == 1;
+        EVP_MD_CTX_free(context);
+        if (!ok) {
+            return {};
+        }
+        ++m_signatures;
+        return sshString("sk-ssh-ed25519@openssh.com") +
+               sshString(std::string_view(reinterpret_cast<const char*>(signature), signatureSize)) +
+               static_cast<char>(m_flags.load()) + sshU32(counter);
+    }
+
+    std::string m_path;
+    EVP_PKEY* m_key = nullptr;
+    std::string m_blob;
+    int m_listener = -1;
+    std::thread m_thread;
+    std::atomic<bool> m_stop{false};
+    std::atomic<std::uint8_t> m_flags{0x01}; // user presence
+    std::atomic<int> m_signatures{0};
+    std::uint32_t m_counter = 0;
+};
+
+} // namespace
+#endif
+
+WT_TEST(ssh_security_key_through_the_agent) {
+#ifndef WT_TEST_HAVE_OPENSSL
+    std::fprintf(stderr, "    SKIP: built without OpenSSL\n");
+#else
+    auto* sshd = server();
+    if (!sshd) {
+        return;
+    }
+    FakeSecurityKeyAgent agent(sshd->dir() + "/sk-agent.sock");
+    WT_REQUIRE(agent.start());
+    WT_REQUIRE(sshd->authorize(agent.authorizedKey()));
+    ::setenv("SSH_AUTH_SOCK", (sshd->dir() + "/sk-agent.sock").c_str(), 1);
+    struct UnsetAgent {
+        ~UnsetAgent() { ::unsetenv("SSH_AUTH_SOCK"); }
+    } unsetAgent;
+
+    auto options = baseOptions(*sshd);
+    options.auth = ssh::AuthMethod::Agent;
+    options.identityFile.clear();
+    ScriptedUi ui;
+    std::string error;
+    auto connection = connectLogged(options, ui, &error);
+    WT_REQUIRE(connection != nullptr);
+    WT_CHECK_EQ(connection->authMethodUsed(), std::string("agent (security key)"));
+    WT_CHECK(agent.signatures() >= 1);
+    WT_CHECK(std::any_of(ui.infos.begin(), ui.infos.end(),
+                         [](const std::string& info) { return info.find("touch it") != std::string::npos; }));
+    connection.reset();
+
+    // The flags reach the server: a signature without user presence (not touched) is refused.
+    agent.setFlags(0);
+    ScriptedUi untouched;
+    WT_CHECK(!ssh::SshConnection::connect(options, untouched, &error));
+    WT_CHECK(error.find("Authentication failed") != std::string::npos);
+#endif
 }
 
 WT_TEST(ssh_certificate_authentication) {
