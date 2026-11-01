@@ -390,6 +390,14 @@ std::string defaultShell() {
     return "cmd.exe";
 }
 
+bool runningInFlatpak() {
+    return false;
+}
+
+std::vector<std::string> flatpakSpawnCommand(const PtyOptions&) {
+    return {};
+}
+
 std::string findExecutable(std::string_view program, std::string_view pathVariable) {
     if (program.empty()) {
         return {};

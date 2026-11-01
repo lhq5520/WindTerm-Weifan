@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -62,6 +63,33 @@ bool writeAll(Pty& pty, std::string_view data) {
 }
 
 } // namespace
+
+WT_TEST(pty_flatpak_host_command) {
+    PtyOptions options;
+    options.workingDirectory = "/home/user/project";
+    options.environment = {{"TERM", "xterm-256color"}, {"COLORTERM", "truecolor"}};
+    options.loginShell = true;
+    const char* previous = std::getenv("SHELL");
+    const std::string savedShell = previous ? previous : "";
+    ::setenv("SHELL", "/usr/bin/zsh", 1); // the host's shell; it need not exist in the sandbox
+    const std::vector<std::string> shell = flatpakSpawnCommand(options);
+    if (previous) {
+        ::setenv("SHELL", savedShell.c_str(), 1);
+    } else {
+        ::unsetenv("SHELL");
+    }
+    const std::vector<std::string> expected{"flatpak-spawn", "--host", "--watch-bus", "--directory=/home/user/project",
+                                            "--env=TERM=xterm-256color", "--env=COLORTERM=truecolor", "/usr/bin/zsh", "-l"};
+    WT_CHECK(shell == expected);
+    options = {};
+    options.program = "htop";
+    options.arguments = {"-d", "10"};
+    options.inheritEnvironment = false;
+    const std::vector<std::string> program = flatpakSpawnCommand(options);
+    const std::vector<std::string> expectedProgram{"flatpak-spawn", "--host", "--watch-bus", "--clear-env", "htop", "-d", "10"};
+    WT_CHECK(program == expectedProgram);
+    WT_CHECK(!runningInFlatpak()); // not in a sandbox here (no /.flatpak-info)
+}
 
 WT_TEST(pty_runs_command_and_reports_exit_code) {
     auto pty = createPty();

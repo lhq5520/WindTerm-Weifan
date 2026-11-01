@@ -115,6 +115,7 @@ install(TARGETS windterm-weifan
 
 if(UNIX AND NOT APPLE)
     install(FILES resources/linux/windterm-weifan.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+    install(FILES resources/linux/dev.weifan.windterm.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
     foreach(size 16 32 48 64 128 256 512)
         install(FILES resources/icons/windterm-weifan-${size}.png
                 DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${size}x${size}/apps

@@ -1,0 +1,63 @@
+# Flatpak build from a checkout:
+#   flatpak install flathub org.kde.Platform//6.8 org.kde.Sdk//6.8
+#   flatpak-builder --user --install --force-clean build-flatpak packaging/flatpak/dev.weifan.windterm.yml
+#   flatpak run dev.weifan.windterm
+#
+# Local sessions run on the host through `flatpak-spawn --host` (see --talk-name below), so the
+# user's own shell and tools are used; WT_FLATPAK_SANDBOX_SHELL=1 keeps them in the sandbox.
+app-id: dev.weifan.windterm
+runtime: org.kde.Platform
+runtime-version: '6.8'
+sdk: org.kde.Sdk
+command: WindTerm-Weifan
+rename-desktop-file: windterm-weifan.desktop
+rename-icon: windterm-weifan
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Serial ports (/dev/ttyUSB*, /dev/ttyACM*)
+  - --device=all
+  # SSH keys, known_hosts, SFTP transfers and session logs
+  - --filesystem=home
+  - --socket=ssh-auth
+  # Host shells (flatpak-spawn --host) and the Secret Service keyring
+  - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: libssh2
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_SHARED_LIBS=ON
+      - -DBUILD_STATIC_LIBS=OFF
+      - -DBUILD_EXAMPLES=OFF
+      - -DBUILD_TESTING=OFF
+      - -DCRYPTO_BACKEND=OpenSSL
+      - -DENABLE_ZLIB_COMPRESSION=ON
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /lib/cmake
+      - /share
+    sources:
+      - type: archive
+        url: https://libssh2.org/download/libssh2-1.11.1.tar.gz
+        sha256: d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7
+
+  - name: windterm-weifan
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DWT_ENABLE_SSH=ON
+      - -DWT_CRYPTO_BACKEND=openssl
+      - -DWT_BUILD_TESTS=OFF
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - build
+          - build-flatpak
+          - .flatpak-builder

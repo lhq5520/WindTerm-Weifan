@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.weifan.windterm</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>WindTerm-Weifan</name>
+  <summary>Terminal emulator and SSH, SFTP, Telnet and serial client</summary>
+  <developer id="dev.weifan">
+    <name>WindTerm-Weifan contributors</name>
+  </developer>
+  <description>
+    <p>
+      A fast, cross-platform terminal emulator with a built-in client for remote sessions,
+      inspired by WindTerm.
+    </p>
+    <ul>
+      <li>Local shells with tabs, split panes, search, themes and configurable shortcuts</li>
+      <li>SSH with agent, key, certificate and security key logins, jump hosts and proxies</li>
+      <li>Port, agent and X11 forwarding, and an SFTP panel</li>
+      <li>Telnet and serial port sessions</li>
+      <li>Session logging, triggers, command completion and input broadcasting</li>
+      <li>An encrypted credential vault or the system keyring</li>
+      <li>Sixel and kitty graphics, the kitty keyboard protocol and true colour</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">windterm-weifan.desktop</launchable>
+  <url type="homepage">https://github.com/lhq5520/WindTerm-Weifan</url>
+  <url type="bugtracker">https://github.com/lhq5520/WindTerm-Weifan/issues</url>
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+  <keywords>
+    <keyword>terminal</keyword>
+    <keyword>ssh</keyword>
+    <keyword>sftp</keyword>
+    <keyword>serial</keyword>
+    <keyword>telnet</keyword>
+  </keywords>
+  <provides>
+    <binary>WindTerm-Weifan</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-01">
+      <description>
+        <p>First release of the rewrite.</p>
+      </description>
+    </release>
+  </releases>
+</component>

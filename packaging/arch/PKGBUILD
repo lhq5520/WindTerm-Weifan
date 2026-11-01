@@ -1,0 +1,35 @@
+# Arch Linux package. Build from this directory with `makepkg -si`
+# (`updpkgsums` fills in the checksum of a new release tarball).
+pkgname=windterm-weifan
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Terminal emulator and SSH, SFTP, Telnet and serial client'
+arch=('x86_64' 'aarch64')
+url='https://github.com/lhq5520/WindTerm-Weifan'
+license=('Apache-2.0')
+depends=('qt6-base' 'libssh2' 'openssl' 'zlib' 'hicolor-icon-theme')
+makedepends=('cmake' 'ninja' 'qt6-tools')
+checkdepends=('openssh' 'dbus')
+optdepends=('xorg-xauth: X11 forwarding'
+            'gnome-keyring: storing passwords in the Secret Service keyring')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cmake -B build -S "WindTerm-Weifan-$pkgver" -G Ninja \
+    -DCMAKE_BUILD_TYPE=None \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DWT_ENABLE_SSH=ON \
+    -DWT_CRYPTO_BACKEND=openssl \
+    -DWT_BUILD_TESTS=ON
+  cmake --build build
+}
+
+check() {
+  QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+  install -Dm644 "WindTerm-Weifan-$pkgver/src/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

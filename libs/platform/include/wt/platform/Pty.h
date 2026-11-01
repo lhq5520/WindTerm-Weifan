@@ -95,6 +95,13 @@ std::unique_ptr<Pty> createPty();
 // The user's login shell: $SHELL, then the passwd database, then /bin/sh.
 std::string defaultShell();
 
+// Inside a Flatpak sandbox (Linux) the user's shell and programs live on the host, so local
+// sessions are started through `flatpak-spawn --host`, which hands the PTY over as their
+// controlling terminal. WT_FLATPAK_SANDBOX_SHELL=1 keeps them in the sandbox.
+bool runningInFlatpak();
+// The flatpak-spawn command line (program first) that runs `options` on the host.
+std::vector<std::string> flatpakSpawnCommand(const PtyOptions& options);
+
 // Resolves `program` against `pathVariable` (PATH syntax). Returns empty if not found/executable.
 std::string findExecutable(std::string_view program, std::string_view pathVariable);
 

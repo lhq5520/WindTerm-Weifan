@@ -322,10 +322,21 @@ private:
     PtySize m_size;
 };
 
-Status PosixPty::start(const PtyOptions& options) {
+Status PosixPty::start(const PtyOptions& requested) {
     if (m_master >= 0 || m_pid > 0) {
         return Status::error("PTY already started");
     }
+    PtyOptions hostOptions;
+    const bool viaHost = runningInFlatpak();
+    if (viaHost) {
+        const std::vector<std::string> command = flatpakSpawnCommand(requested);
+        hostOptions = requested;
+        hostOptions.program = command.front();
+        hostOptions.arguments.assign(command.begin() + 1, command.end());
+        hostOptions.loginShell = false;
+        hostOptions.workingDirectory.clear(); // a host directory, passed with --directory
+    }
+    const PtyOptions& options = viaHost ? hostOptions : requested;
 
     std::vector<std::string> env = buildEnvironment(options);
     const std::string program = options.program.empty() ? defaultShell() : options.program;
@@ -616,6 +627,42 @@ std::string defaultShell() {
         }
     }
     return "/bin/sh";
+}
+
+bool runningInFlatpak() {
+#ifdef __linux__
+    static const bool inside = ::access("/.flatpak-info", F_OK) == 0;
+    const char* sandboxed = std::getenv("WT_FLATPAK_SANDBOX_SHELL");
+    return inside && !(sandboxed && std::string_view(sandboxed) == "1");
+#else
+    return false;
+#endif
+}
+
+std::vector<std::string> flatpakSpawnCommand(const PtyOptions& options) {
+    // --watch-bus ends the host process together with us.
+    std::vector<std::string> command{"flatpak-spawn", "--host", "--watch-bus"};
+    if (!options.inheritEnvironment) {
+        command.emplace_back("--clear-env");
+    }
+    if (!options.workingDirectory.empty()) {
+        command.push_back("--directory=" + options.workingDirectory);
+    }
+    for (const auto& [key, value] : options.environment) {
+        command.push_back("--env=" + key + "=" + value);
+    }
+    // The sandbox inherits the host's $SHELL, which need not exist inside the sandbox.
+    std::string program = options.program;
+    if (program.empty()) {
+        const char* shell = std::getenv("SHELL");
+        program = shell && *shell ? shell : "/bin/sh";
+    }
+    command.push_back(std::move(program));
+    if (options.loginShell) {
+        command.emplace_back("-l"); // argv[0] cannot be chosen through flatpak-spawn
+    }
+    command.insert(command.end(), options.arguments.begin(), options.arguments.end());
+    return command;
 }
 
 std::string findExecutable(std::string_view program, std::string_view pathVariable) {
