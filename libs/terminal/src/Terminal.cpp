@@ -1364,7 +1364,7 @@ void Terminal::kittyExecute(const KittyCommand& command, std::string data) {
                              command.id == 0 && command.number == 0};
         kittyEnforceQuota();
         std::string error;
-        if (command.action == 'T' && m_kittyImages.count(id) != 0) {
+        if (command.action == 'T') {
             error = kittyPut(command, id);
         }
         kittyRespond(command, id, error);
@@ -1555,16 +1555,24 @@ void Terminal::kittyEnforceQuota() {
     auto placed = [this](std::uint32_t id) {
         return std::any_of(m_images.begin(), m_images.end(), [id](const Image& image) { return image.kittyImage == id; });
     };
-    // Evict the oldest images, those that are not shown first.
+    // Evict the oldest images, those that are not shown first. The image transmitted last (the
+    // newest serial) is never evicted, or a transmission could vanish right away.
     while (m_kittyImages.size() > kMaxKittyImages || bytes() > kKittyQuota) {
-        auto victim = m_kittyImages.begin();
-        bool victimPlaced = placed(victim->first);
-        for (auto it = std::next(m_kittyImages.begin()); it != m_kittyImages.end(); ++it) {
+        auto victim = m_kittyImages.end();
+        bool victimPlaced = true;
+        for (auto it = m_kittyImages.begin(); it != m_kittyImages.end(); ++it) {
+            if (it->second.serial == m_kittySerial) {
+                continue;
+            }
             const bool itPlaced = placed(it->first);
-            if ((victimPlaced && !itPlaced) || (itPlaced == victimPlaced && it->second.serial < victim->second.serial)) {
+            if (victim == m_kittyImages.end() || (victimPlaced && !itPlaced) ||
+                (itPlaced == victimPlaced && it->second.serial < victim->second.serial)) {
                 victim = it;
                 victimPlaced = itPlaced;
             }
+        }
+        if (victim == m_kittyImages.end()) {
+            break; // only the new image is left (it is within the per-image limits)
         }
         const std::uint32_t id = victim->first;
         m_images.erase(std::remove_if(m_images.begin(), m_images.end(),
