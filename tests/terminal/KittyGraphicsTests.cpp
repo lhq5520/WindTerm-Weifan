@@ -107,8 +107,9 @@ WT_TEST(kitty_transmit_and_display) {
     // RGBA keeps its alpha; C=1 leaves the cursor alone.
     f.t.feed(APC "a=T,f=32,s=1,v=1,i=6,C=1;AAD/gA==" ST);
     WT_CHECK_EQ(f.take(), std::string(APC "i=6;OK" ST));
-    WT_REQUIRE(f.image(6) != nullptr);
-    WT_CHECK_EQ(pixel(*f.image(6)->bitmap, 0, 0), 0x800000FFu);
+    const Terminal::Image* rgba = f.image(6);
+    WT_REQUIRE(rgba != nullptr);
+    WT_CHECK_EQ(pixel(*rgba->bitmap, 0, 0), 0x800000FFu);
     WT_CHECK_EQ(f.t.cursor().column, 3);
 }
 
@@ -125,20 +126,23 @@ WT_TEST(kitty_chunked_transmission_and_put) {
     // Natural size with 10 x 20 cells: 4 columns, 2 rows; the cursor ends on the last row.
     f.t.feed(APC "a=p,i=7,p=1;" ST);
     WT_CHECK_EQ(f.take(), std::string(APC "i=7,p=1;OK" ST));
-    WT_REQUIRE(f.image(7) != nullptr);
-    WT_CHECK_EQ(f.image(7)->columns, 4);
-    WT_CHECK_EQ(f.image(7)->rows, 2);
+    const Terminal::Image* natural = f.image(7);
+    WT_REQUIRE(natural != nullptr);
+    WT_CHECK_EQ(natural->columns, 4);
+    WT_CHECK_EQ(natural->rows, 2);
     WT_CHECK_EQ(f.t.cursor().row, 1);
     WT_CHECK_EQ(f.t.cursor().column, 4);
     // The same placement id moves the placement; c and r scale it to the cells.
     f.t.feed("\r\n" APC "a=p,i=7,p=1,c=2,r=3;" ST);
     WT_CHECK_EQ(f.take(), std::string(APC "i=7,p=1;OK" ST));
     WT_REQUIRE(f.t.visibleImages().size() == 1u);
-    WT_CHECK_EQ(f.image(7)->row, f.t.screenStart() + 2);
-    WT_CHECK_EQ(f.image(7)->columns, 2);
-    WT_CHECK_EQ(f.image(7)->rows, 3);
-    WT_CHECK_EQ(f.image(7)->pixelWidth, 20);
-    WT_CHECK_EQ(f.image(7)->pixelHeight, 60);
+    const Terminal::Image* moved = f.image(7);
+    WT_REQUIRE(moved != nullptr);
+    WT_CHECK_EQ(moved->row, f.t.screenStart() + 2);
+    WT_CHECK_EQ(moved->columns, 2);
+    WT_CHECK_EQ(moved->rows, 3);
+    WT_CHECK_EQ(moved->pixelWidth, 20);
+    WT_CHECK_EQ(moved->pixelHeight, 60);
     // Only one side given: the other keeps the aspect ratio (40 x 30 -> 20 x 15).
     f.t.feed(APC "a=p,i=7,p=2,c=2,C=1,q=1;" ST);
     WT_CHECK_EQ(f.take(), std::string()); // q=1: no OK
@@ -212,8 +216,9 @@ WT_TEST(kitty_png_and_zlib) {
     f.t.feed(std::string(APC "a=T,f=100,i=50;") + wt::core::base64Encode(pngHeader(3, 2) + "IDAT...") + ST);
     WT_CHECK_EQ(f.take(), std::string(APC "i=50;OK" ST));
     WT_CHECK_EQ(decoded, 1);
-    WT_REQUIRE(f.image(50) != nullptr);
-    WT_CHECK_EQ(f.image(50)->bitmap->width, 3);
+    const Terminal::Image* png = f.image(50);
+    WT_REQUIRE(png != nullptr);
+    WT_CHECK_EQ(png->bitmap->width, 3);
     // The size in the header is checked before decoding.
     f.t.feed(std::string(APC "a=T,f=100,i=51;") + wt::core::base64Encode(pngHeader(20000, 2)) + ST);
     WT_CHECK_EQ(f.take(), std::string(APC "i=51;EFBIG:image too large" ST));
@@ -225,8 +230,9 @@ WT_TEST(kitty_png_and_zlib) {
     f.t.feed(APC "a=T,f=24,s=2,v=1,o=z,i=53;eJz7z8DA8J8BAAf+Af8=" ST);
     if (zlibAvailable()) {
         WT_CHECK_EQ(f.take(), std::string(APC "i=53;OK" ST));
-        WT_REQUIRE(f.image(53) != nullptr);
-        WT_CHECK_EQ(pixel(*f.image(53)->bitmap, 1, 0), 0xFF00FF00u);
+        const Terminal::Image* compressed = f.image(53);
+        WT_REQUIRE(compressed != nullptr);
+        WT_CHECK_EQ(pixel(*compressed->bitmap, 1, 0), 0xFF00FF00u);
         // More output than the image needs is refused (decompression bombs).
         f.t.feed(APC "a=T,f=24,s=1,v=1,o=z,i=54;eJz7z8DA8J8BAAf+Af8=" ST);
         WT_CHECK_EQ(f.take(), std::string(APC "i=54;EINVAL:cannot decompress the data" ST));

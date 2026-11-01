@@ -1277,14 +1277,15 @@ void TerminalWidget::sendUserInput(std::string_view bytes) {
             // recorded. Give the echo a moment to arrive over slow links.
             const QString typed = QString::fromStdString(submitted.front().text);
             const GridPoint at = *start;
-            QPointer<TerminalWidget> self(this);
-            QTimer::singleShot(300, this, [self, typed, at] {
-                if (!self || !self->m_session) {
+            // With `this` as the context the timer never fires after the widget is destroyed.
+            QTimer::singleShot(300, this, [this, typed, at] {
+                TerminalSession* session = m_session;
+                if (!session) {
                     return;
                 }
-                const QString screen = QString::fromStdString(self->m_session->terminal().textFrom(at));
+                const QString screen = QString::fromStdString(session->terminal().textFrom(at));
                 if (!typed.trimmed().isEmpty() && screen.startsWith(typed.trimmed())) {
-                    Q_EMIT self->commandSubmitted(typed);
+                    Q_EMIT commandSubmitted(typed);
                 }
             });
         } else if (start) {

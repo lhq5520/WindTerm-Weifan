@@ -74,20 +74,22 @@ ForwardingDialog::ForwardingDialog(SshBackend* backend, QWidget* parent)
 }
 
 int ForwardingDialog::addForward(const wt::session::PortForwardSettings& forward) {
-    if (!m_backend) {
+    SshBackend* backend = m_backend; // QPointer: read once
+    if (!backend) {
         return 0;
     }
-    const int id = m_backend->addForward(toSshForward(forward));
+    const int id = backend->addForward(toSshForward(forward));
     refresh();
     return id;
 }
 
 void ForwardingDialog::removeSelected() {
-    if (!m_backend) {
+    SshBackend* backend = m_backend;
+    if (!backend) {
         return;
     }
     if (QTreeWidgetItem* item = m_list->currentItem()) {
-        m_backend->removeForward(item->data(0, Qt::UserRole).toInt());
+        backend->removeForward(item->data(0, Qt::UserRole).toInt());
         refresh();
     }
 }
@@ -95,11 +97,12 @@ void ForwardingDialog::removeSelected() {
 void ForwardingDialog::refresh() {
     const int selected = m_list->currentItem() ? m_list->currentItem()->data(0, Qt::UserRole).toInt() : 0;
     m_list->clear();
-    if (!m_backend) {
+    SshBackend* backend = m_backend;
+    if (!backend) {
         m_summary->setText(tr("The session is closed."));
         return;
     }
-    for (const auto& status : m_backend->forwards()) {
+    for (const auto& status : backend->forwards()) {
         const auto& f = status.forward;
         const QString listen = QStringLiteral("%1:%2")
                                    .arg(f.bindAddress.empty() ? (f.kind == wt::ssh::ForwardKind::Remote
@@ -119,13 +122,13 @@ void ForwardingDialog::refresh() {
         }
     }
     QStringList extras;
-    if (m_backend->agentForwardingActive()) {
+    if (backend->agentForwardingActive()) {
         extras << tr("agent forwarding on");
     }
-    if (m_backend->x11ForwardingActive()) {
+    if (backend->x11ForwardingActive()) {
         extras << tr("X11 forwarding on");
     }
-    m_summary->setText(m_backend->state() == SshBackend::State::Connected
+    m_summary->setText(backend->state() == SshBackend::State::Connected
                            ? (extras.isEmpty() ? tr("Connected.") : tr("Connected; %1.").arg(extras.join(QStringLiteral(", "))))
                            : tr("Not connected: forwards start when the session reconnects."));
 }

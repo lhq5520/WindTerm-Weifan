@@ -369,10 +369,9 @@ std::string expandLogFileName(std::string_view pattern, const std::string& sessi
         }
         return out.empty() ? std::string("session") : out;
     };
-    auto two = [](int value) {
-        char text[8];
-        std::snprintf(text, sizeof(text), "%02d", value);
-        return std::string(text);
+    auto two = [](int value) { // zero-padded to two digits
+        const std::string digits = std::to_string(value);
+        return value >= 0 && value < 10 ? "0" + digits : digits;
     };
     std::string out;
     for (std::size_t i = 0; i < pattern.size(); ++i) {
