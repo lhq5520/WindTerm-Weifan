@@ -22,7 +22,8 @@ wt_add_test(wt_terminal_tests
 
 wt_add_test(wt_net_tests SOURCES net/NetTests.cpp net/TelnetTests.cpp net/SocksServerTests.cpp LIBS wt::net
             LABELS "integration;net")
-wt_add_test(wt_session_tests SOURCES session/SessionTests.cpp LIBS wt::session LABELS "unit;session")
+wt_add_test(wt_session_tests SOURCES session/SessionTests.cpp session/SessionLogTests.cpp LIBS wt::session
+            LABELS "unit;session")
 
 if(WT_HAVE_VAULT)
     wt_add_test(wt_security_tests SOURCES security/SecurityTests.cpp LIBS wt::security LABELS "unit;security")

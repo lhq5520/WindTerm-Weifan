@@ -14,6 +14,7 @@
 
 class AppContext;
 class QDockWidget;
+class QLabel;
 class QMenu;
 class SftpPanel;
 class QTabWidget;
@@ -71,8 +72,16 @@ public Q_SLOTS:
     void sendBreak();
     // Lists/edits the port forwards of the active SSH session.
     void showPortForwarding();
+    // Starts/stops logging the active pane to a file.
+    void setSessionLogging(bool enabled);
     // Shows/hides the SFTP browser for the active SSH pane.
     void setFileBrowserVisible(bool visible);
+
+public:
+    // Typing in one pane goes to the others too: all panes of its tab, or of the window.
+    enum class Broadcast { Off, Tab, All };
+    void setBroadcast(Broadcast mode);
+    Broadcast broadcast() const { return m_broadcast; }
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -94,6 +103,11 @@ private:
     void rebuildThemeMenu();
     void reportError(const QString& message);
     void syncFileBrowser();
+    void syncPaneActions();
+    void broadcastFrom(TerminalPane* source, const QByteArray& bytes);
+    void onPaneStarted(TerminalPane* pane);
+    void onTriggerNotification(TerminalPane* pane, const QString& title, const QString& message);
+    QList<TerminalPane*> allPanes() const;
 
     Options m_options;
     AppContext* m_context; // outlives the window (or is owned by it, see the constructor)
@@ -105,5 +119,7 @@ private:
     QString m_errorString;
     QDockWidget* m_fileDock = nullptr;
     SftpPanel* m_fileBrowser = nullptr;
+    QLabel* m_broadcastLabel = nullptr;
+    Broadcast m_broadcast = Broadcast::Off;
     bool m_closing = false;
 };

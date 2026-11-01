@@ -14,6 +14,7 @@
 #include <QFontMetricsF>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
+#include <QListWidget>
 #include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
@@ -478,8 +479,60 @@ void TerminalWidget::setSearchResults(std::vector<SearchMatch> matches, int curr
     viewport()->update();
 }
 
+void TerminalWidget::setHighlightRules(std::vector<CompiledTrigger> rules) {
+    m_highlightRules.clear();
+    for (auto& rule : rules) {
+        if (rule.rule.action == wt::session::TriggerAction::Highlight) {
+            m_highlightRules.push_back(std::move(rule));
+        }
+    }
+    viewport()->update();
+}
+
+std::vector<TerminalWidget::RuleMatch> TerminalWidget::highlightMatches(std::int64_t absoluteRow) const {
+    std::vector<RuleMatch> result;
+    if (m_highlightRules.empty() || !m_session) {
+        return result;
+    }
+    const Terminal& term = m_session->terminal();
+    const Line* line = term.absoluteLine(absoluteRow);
+    if (!line) {
+        return result;
+    }
+    // The row as text, with the cell column of every UTF-16 unit.
+    QString text;
+    std::vector<int> columnAt;
+    const int columns = std::min<int>(static_cast<int>(line->cells.size()), term.columns());
+    for (int col = 0; col < columns; ++col) {
+        const Cell& cell = line->cells[static_cast<std::size_t>(col)];
+        if (cell.width == 0 || cell.attributes.has(WidePadding)) {
+            continue;
+        }
+        const QString piece = cellString(term, cell);
+        text += piece;
+        columnAt.insert(columnAt.end(), static_cast<std::size_t>(piece.size()), col);
+    }
+    for (std::size_t i = 0; i < m_highlightRules.size(); ++i) {
+        auto it = m_highlightRules[i].regex.globalMatch(text);
+        while (it.hasNext()) {
+            const auto match = it.next();
+            if (match.capturedLength() <= 0) {
+                continue;
+            }
+            const int first = columnAt[static_cast<std::size_t>(match.capturedStart())];
+            const int last = columnAt[static_cast<std::size_t>(match.capturedEnd() - 1)];
+            const int width = line->cells[static_cast<std::size_t>(last)].width;
+            result.push_back({first, last + std::max(0, width - 1), static_cast<int>(i)});
+        }
+    }
+    return result;
+}
+
 std::vector<TerminalWidget::RowHighlight> TerminalWidget::searchHighlightsForRow(std::int64_t absoluteRow) const {
     std::vector<RowHighlight> result;
+    for (const RuleMatch& match : highlightMatches(absoluteRow)) {
+        result.push_back({match.startColumn, match.endColumn, Highlight::Rule, match.rule});
+    }
     if (m_searchMatches.empty()) {
         return result;
     }
@@ -548,17 +601,19 @@ void TerminalWidget::drawLine(QPainter& painter, const Line& line, int y, std::i
     const Terminal& term = m_session->terminal();
     const bool reverse = term.modes().reverseVideo;
     const int columns = std::min<int>(static_cast<int>(line.cells.size()), term.columns());
-    auto highlightAt = [&](int column) {
+    auto highlightAt = [&](int column) -> std::pair<Highlight, int> {
         if (selection && selection->contains(absoluteRow, column)) {
-            return Highlight::Selection;
+            return {Highlight::Selection, -1};
         }
         Highlight best = Highlight::None;
+        int rule = -1;
         for (const RowHighlight& h : highlights) {
             if (column >= h.startColumn && column <= h.endColumn && h.kind > best) {
                 best = h.kind;
+                rule = h.rule;
             }
         }
-        return best;
+        return {best, rule};
     };
     const bool hoverRow = m_hoverLink && m_hoverLink->row == absoluteRow;
     auto hovered = [&](int column) {
@@ -569,7 +624,8 @@ void TerminalWidget::drawLine(QPainter& painter, const Line& line, int y, std::i
     while (col < columns) {
         const Cell& first = line.cells[static_cast<std::size_t>(col)];
         const CellAttributes& attr = first.attributes;
-        const Highlight highlight = highlightAt(col);
+        const auto highlighted = highlightAt(col);
+        const Highlight highlight = highlighted.first;
         const bool hover = hovered(col);
 
         // Group consecutive cells with identical attributes. Non-ASCII glyphs are drawn one per
@@ -579,7 +635,7 @@ void TerminalWidget::drawLine(QPainter& painter, const Line& line, int y, std::i
         if (asciiRun) {
             while (end < columns) {
                 const Cell& c = line.cells[static_cast<std::size_t>(end)];
-                if (c.width != 1 || c.ch >= 0x80 || !(c.attributes == attr) || highlightAt(end) != highlight ||
+                if (c.width != 1 || c.ch >= 0x80 || !(c.attributes == attr) || highlightAt(end) != highlighted ||
                     hovered(end) != hover) {
                     break;
                 }
@@ -610,6 +666,18 @@ void TerminalWidget::drawLine(QPainter& painter, const Line& line, int y, std::i
             fg = Qt::black;
             break;
         case Highlight::Match: painter.fillRect(rect, kMatchBackground); break;
+        case Highlight::Rule: {
+            const CompiledTrigger& rule = m_highlightRules[static_cast<std::size_t>(highlighted.second)];
+            if (rule.background.isValid()) {
+                painter.fillRect(rect, rule.background);
+            } else if (!defaultBackground) {
+                painter.fillRect(rect, bg);
+            }
+            if (rule.foreground.isValid()) {
+                fg = rule.foreground;
+            }
+            break;
+        }
         case Highlight::None:
             if (!defaultBackground) {
                 painter.fillRect(rect, bg);
@@ -862,7 +930,7 @@ void TerminalWidget::paste(const QString& text) {
     if (!m_session || text.isEmpty()) {
         return;
     }
-    m_session->sendBytes(encodePaste(text.toStdString(), m_session->terminal().modes().bracketedPaste));
+    sendUserInput(encodePaste(text.toStdString(), m_session->terminal().modes().bracketedPaste));
     scrollToBottom();
 }
 
@@ -976,6 +1044,35 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
     if (handleShortcut(event)) {
         return;
     }
+    if (completionVisible() && (event->modifiers() & ~Qt::KeypadModifier) == Qt::NoModifier) {
+        const int count = m_completion->count();
+        const int current = m_completion->currentRow();
+        switch (event->key()) {
+        case Qt::Key_Down:
+            m_completion->setCurrentRow((current + 1) % count);
+            event->accept();
+            return;
+        case Qt::Key_Up:
+            m_completion->setCurrentRow(current <= 0 ? count - 1 : current - 1);
+            event->accept();
+            return;
+        case Qt::Key_Right:
+        case Qt::Key_Tab:
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            if (current >= 0) { // only a suggestion the user picked replaces the key
+                acceptCompletion(current);
+                event->accept();
+                return;
+            }
+            break;
+        case Qt::Key_Escape:
+            hideCompletion();
+            event->accept();
+            return;
+        default: break;
+        }
+    }
 
     const Terminal& term = m_session->terminal();
     const unsigned mods = toTerminalModifiers(event->modifiers());
@@ -1031,15 +1128,154 @@ void TerminalWidget::keyPressEvent(QKeyEvent* event) {
         QAbstractScrollArea::keyPressEvent(event);
         return;
     }
-    m_session->sendBytes(bytes);
+    sendUserInput(bytes);
     m_cursorBlinkOn = true;
     scrollToBottom();
     event->accept();
 }
 
+void TerminalWidget::sendUserInput(std::string_view bytes) {
+    if (!m_session || bytes.empty()) {
+        return;
+    }
+    const Terminal& term = m_session->terminal();
+    if (term.isAlternateScreen()) {
+        m_inputLine.reset(); // full-screen programs: nothing to remember
+        m_promptEnd.reset();
+        hideCompletion();
+        m_session->sendInput(bytes);
+        return;
+    }
+    if (m_inputLine.empty() && static_cast<unsigned char>(bytes.front()) >= 0x20 && bytes.front() != 0x7F) {
+        m_promptEnd = GridPoint{term.screenStart() + term.cursor().row, term.cursor().column};
+    }
+    const auto submitted = m_inputLine.feed(bytes);
+    if (!submitted.empty()) {
+        hideCompletion();
+        const auto& marks = term.shellMarks();
+        const std::optional<GridPoint> start =
+            marks.commandStart && !marks.commandRunning && (!m_promptEnd || marks.commandStart->row >= m_promptEnd->row)
+                ? marks.commandStart
+                : m_promptEnd;
+        if (start && submitted.front().reliable) {
+            // Only what the shell echoed counts: input typed at a silent password prompt is never
+            // recorded. Give the echo a moment to arrive over slow links.
+            const QString typed = QString::fromStdString(submitted.front().text);
+            const GridPoint at = *start;
+            QPointer<TerminalWidget> self(this);
+            QTimer::singleShot(300, this, [self, typed, at] {
+                if (!self || !self->m_session) {
+                    return;
+                }
+                const QString screen = QString::fromStdString(self->m_session->terminal().textFrom(at));
+                if (!typed.trimmed().isEmpty() && screen.startsWith(typed.trimmed())) {
+                    Q_EMIT self->commandSubmitted(typed);
+                }
+            });
+        } else if (start) {
+            // Edited with cursor keys or recalled from the shell history: take the screen's word.
+            const QString screen = QString::fromStdString(term.textFrom(*start)).trimmed();
+            if (!screen.isEmpty()) {
+                Q_EMIT commandSubmitted(screen);
+            }
+        }
+        m_promptEnd.reset();
+        if (!m_inputLine.empty()) {
+            m_promptEnd = GridPoint{term.screenStart() + term.cursor().row, term.cursor().column};
+        }
+    }
+    m_session->sendInput(bytes);
+    if (m_completionProvider) {
+        updateCompletion();
+    }
+}
+
+void TerminalWidget::setCompletionProvider(CompletionProvider provider, int minimumPrefix) {
+    m_completionProvider = std::move(provider);
+    m_completionMinimum = std::max(1, minimumPrefix);
+    if (!m_completionProvider) {
+        hideCompletion();
+    }
+}
+
+bool TerminalWidget::completionVisible() const {
+    return m_completion && m_completion->isVisible() && m_completion->count() > 0;
+}
+
+QStringList TerminalWidget::completionItems() const {
+    QStringList items;
+    if (m_completion) {
+        for (int i = 0; i < m_completion->count(); ++i) {
+            items << m_completion->item(i)->text();
+        }
+    }
+    return items;
+}
+
+void TerminalWidget::hideCompletion() {
+    if (m_completion) {
+        m_completion->hide();
+    }
+}
+
+void TerminalWidget::updateCompletion() {
+    const std::string& typed = m_inputLine.line();
+    if (!m_completionProvider || !m_session || !m_inputLine.reliable() || m_session->terminal().isAlternateScreen() ||
+        static_cast<int>(QString::fromStdString(typed).size()) < m_completionMinimum) {
+        hideCompletion();
+        return;
+    }
+    const QStringList items = m_completionProvider(QString::fromStdString(typed));
+    if (items.isEmpty()) {
+        hideCompletion();
+        return;
+    }
+    if (!m_completion) {
+        m_completion = new QListWidget(this);
+        m_completion->setObjectName(QStringLiteral("completionPopup"));
+        m_completion->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
+        m_completion->setAttribute(Qt::WA_ShowWithoutActivating);
+        m_completion->setFocusPolicy(Qt::NoFocus);
+        m_completion->setFont(m_fonts[0]);
+        m_completion->setUniformItemSizes(true);
+        connect(m_completion, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem* item) { acceptCompletion(m_completion->row(item)); });
+    }
+    m_completion->clear();
+    m_completion->addItems(items);
+    m_completion->setCurrentRow(-1);
+    const QFontMetrics metrics(m_completion->font());
+    int width = 0;
+    for (const QString& item : items) {
+        width = std::max(width, metrics.horizontalAdvance(item));
+    }
+    const int rows = std::min<int>(static_cast<int>(items.size()), 8);
+    const int rowHeight = std::max(metrics.height(), m_completion->sizeHintForRow(0));
+    m_completion->resize(std::min(width + 24, std::max(200, viewport()->width())), rows * rowHeight + 6);
+    const Terminal& term = m_session->terminal();
+    const std::int64_t cursorRow = term.screenStart() + term.cursor().row - viewportTopRow();
+    const QPoint below(term.cursor().column * m_cellWidth, static_cast<int>(cursorRow + 1) * m_cellHeight);
+    m_completion->move(viewport()->mapToGlobal(below));
+    m_completion->show();
+}
+
+void TerminalWidget::acceptCompletion(int row) {
+    if (!m_completion || row < 0 || row >= m_completion->count()) {
+        return;
+    }
+    const QString choice = m_completion->item(row)->text();
+    const QString typed = QString::fromStdString(m_inputLine.line());
+    hideCompletion();
+    if (choice.startsWith(typed) && choice.size() > typed.size()) {
+        const std::string rest = choice.mid(typed.size()).toStdString();
+        sendUserInput(rest);
+        hideCompletion(); // the inserted text may match more entries; do not reopen at once
+    }
+}
+
 void TerminalWidget::inputMethodEvent(QInputMethodEvent* event) {
     if (m_session && !event->commitString().isEmpty()) {
-        m_session->sendText(event->commitString());
+        sendUserInput(event->commitString().toStdString());
         scrollToBottom();
     }
     m_preedit = event->preeditString();
@@ -1077,6 +1313,9 @@ void TerminalWidget::focusInEvent(QFocusEvent* event) {
 void TerminalWidget::focusOutEvent(QFocusEvent* event) {
     if (m_session && m_session->terminal().modes().focusEvents) {
         m_session->sendBytes("\x1b[O");
+    }
+    if (event->reason() != Qt::PopupFocusReason) {
+        hideCompletion();
     }
     m_blinkTimer.stop();
     m_cursorBlinkOn = true;

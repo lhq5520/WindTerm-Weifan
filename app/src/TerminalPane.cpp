@@ -5,6 +5,7 @@
 #include "SearchBar.h"
 #include "TerminalWidget.h"
 
+#include <QApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QVBoxLayout>
@@ -39,6 +40,47 @@ TerminalPane::~TerminalPane() {
 void TerminalPane::wireSession() {
     connect(m_session, &TerminalSession::titleChanged, this, &TerminalPane::titleChanged);
     connect(m_session, &TerminalSession::finished, this, [this](int code) { Q_EMIT sessionFinished(this, code); });
+    connect(m_session->triggers(), &TriggerRunner::notifyRequested, this,
+            [this](const QString& title, const QString& message) { Q_EMIT triggerNotification(this, title, message); });
+    connect(m_session->triggers(), &TriggerRunner::beepRequested, this, [] { QApplication::beep(); });
+    connect(m_terminal, &TerminalWidget::commandSubmitted, this, [this](const QString& command) {
+        if (m_context && m_context->settings().completion.enabled) {
+            m_context->recordCommand(historyContext(), command);
+        }
+    });
+}
+
+QString TerminalPane::historyContext() const {
+    return m_profile ? QString::fromStdString(m_profile->id) : QStringLiteral("local");
+}
+
+QString TerminalPane::hostName() const {
+    if (!m_profile) {
+        return QStringLiteral("local");
+    }
+    switch (m_profile->kind) {
+    case wt::session::SessionKind::Ssh: return QString::fromStdString(m_profile->ssh.host);
+    case wt::session::SessionKind::Telnet: return QString::fromStdString(m_profile->telnet.host);
+    case wt::session::SessionKind::Serial:
+        return QFileInfo(QString::fromStdString(m_profile->serial.line.device)).fileName();
+    case wt::session::SessionKind::Local: break;
+    }
+    return QStringLiteral("local");
+}
+
+bool TerminalPane::startLogging(QString* error) {
+    if (!m_context) {
+        if (error) {
+            *error = tr("No settings to take the log directory from");
+        }
+        return false;
+    }
+    const auto& logging = m_context->settings().logging;
+    return m_session->startLog(m_context->logPathFor(title(), hostName()), logging.format, logging.timestamps, error);
+}
+
+void TerminalPane::stopLogging() {
+    m_session->stopLog();
 }
 
 bool TerminalPane::isRemote() const {
@@ -117,4 +159,14 @@ void TerminalPane::applySettings() {
     const QString themeOverride = m_profile ? QString::fromStdString(m_profile->theme) : QString();
     m_terminal->setAppearance(TerminalAppearance::fromSettings(settings, themeOverride));
     m_session->terminal().setScrollbackLimit(static_cast<std::size_t>(settings.terminal.scrollbackLines));
+    m_session->setTriggers(m_context->triggers());
+    m_terminal->setHighlightRules(m_context->triggers());
+    if (settings.completion.enabled) {
+        AppContext* context = m_context;
+        m_terminal->setCompletionProvider(
+            [this, context](const QString& prefix) { return context->completeCommand(historyContext(), prefix); },
+            settings.completion.minimumPrefix);
+    } else {
+        m_terminal->setCompletionProvider({});
+    }
 }

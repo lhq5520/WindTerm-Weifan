@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 
 #include "TerminalWidget.h"
+#include "TriggerEditDialog.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -19,6 +20,7 @@
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 using namespace wt::session;
@@ -45,6 +47,7 @@ SettingsDialog::SettingsDialog(const Settings& settings, QWidget* parent) : QDia
     pages->addTab(createTerminalPage(), tr("Terminal"));
     pages->addTab(createKeyboardPage(), tr("Keyboard"));
     pages->addTab(createSshPage(), tr("SSH"));
+    pages->addTab(createLoggingPage(), tr("Logging && Triggers"));
     layout->addWidget(pages);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &SettingsDialog::accept);
@@ -179,6 +182,121 @@ QWidget* SettingsDialog::createSshPage() {
     return page;
 }
 
+QWidget* SettingsDialog::createLoggingPage() {
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+    auto* form = new QFormLayout;
+    const LoggingSettings& logging = m_original.logging;
+    m_logAutoStart = new QCheckBox(tr("Log every session from its start"), page);
+    m_logAutoStart->setObjectName(QStringLiteral("logAutoStart"));
+    m_logAutoStart->setChecked(logging.autoStart);
+    m_logDirectory = new QLineEdit(QString::fromStdString(logging.directory), page);
+    m_logDirectory->setObjectName(QStringLiteral("logDirectory"));
+    m_logDirectory->setPlaceholderText(tr("Documents/WindTerm-Weifan/Logs"));
+    auto* browse = new QPushButton(tr("Browse..."), page);
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString directory = QFileDialog::getExistingDirectory(this, tr("Log folder"), m_logDirectory->text());
+        if (!directory.isEmpty()) {
+            m_logDirectory->setText(directory);
+        }
+    });
+    auto* directoryRow = new QHBoxLayout;
+    directoryRow->addWidget(m_logDirectory, 1);
+    directoryRow->addWidget(browse);
+    m_logFileName = new QLineEdit(QString::fromStdString(logging.fileName), page);
+    m_logFileName->setObjectName(QStringLiteral("logFileName"));
+    m_logFileName->setToolTip(tr("%Y %m %d %H %M %S: date and time, %N: session name, %h: host"));
+    m_logFormat = new QComboBox(page);
+    m_logFormat->setObjectName(QStringLiteral("logFormat"));
+    m_logFormat->addItem(tr("Plain text"), static_cast<int>(LogFormat::Text));
+    m_logFormat->addItem(tr("Raw (with escape sequences)"), static_cast<int>(LogFormat::Raw));
+    m_logFormat->setCurrentIndex(std::max(0, m_logFormat->findData(static_cast<int>(logging.format))));
+    m_logTimestamps = new QCheckBox(tr("Start every line with the time"), page);
+    m_logTimestamps->setChecked(logging.timestamps);
+    form->addRow(QString(), m_logAutoStart);
+    form->addRow(tr("Folder:"), directoryRow);
+    form->addRow(tr("File name:"), m_logFileName);
+    form->addRow(tr("Format:"), m_logFormat);
+    form->addRow(QString(), m_logTimestamps);
+    m_completion = new QCheckBox(tr("Suggest commands from the history while typing"), page);
+    m_completion->setObjectName(QStringLiteral("completionEnabled"));
+    m_completion->setChecked(m_original.completion.enabled);
+    m_completionPrefix = new QSpinBox(page);
+    m_completionPrefix->setRange(1, 20);
+    m_completionPrefix->setValue(m_original.completion.minimumPrefix);
+    m_completionPrefix->setSuffix(tr(" characters"));
+    form->addRow(tr("Completion:"), m_completion);
+    form->addRow(tr("Suggest after:"), m_completionPrefix);
+    layout->addLayout(form);
+
+    layout->addWidget(new QLabel(tr("Triggers (applied to every line of output):"), page));
+    m_triggers = m_original.triggers;
+    m_triggerList = new QTreeWidget(page);
+    m_triggerList->setObjectName(QStringLiteral("triggerList"));
+    m_triggerList->setRootIsDecorated(false);
+    m_triggerList->setHeaderLabels({tr("Name"), tr("Pattern"), tr("Action")});
+    connect(m_triggerList, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem* item) { editTrigger(m_triggerList->indexOfTopLevelItem(item)); });
+    connect(m_triggerList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int column) {
+        const int index = m_triggerList->indexOfTopLevelItem(item);
+        if (column == 0 && index >= 0 && index < static_cast<int>(m_triggers.size())) {
+            m_triggers[static_cast<std::size_t>(index)].enabled = item->checkState(0) == Qt::Checked;
+        }
+    });
+    layout->addWidget(m_triggerList, 1);
+    auto* buttons = new QHBoxLayout;
+    auto* add = new QPushButton(tr("Add..."), page);
+    auto* edit = new QPushButton(tr("Edit..."), page);
+    auto* remove = new QPushButton(tr("Remove"), page);
+    connect(add, &QPushButton::clicked, this, [this] { editTrigger(-1); });
+    connect(edit, &QPushButton::clicked, this,
+            [this] { editTrigger(m_triggerList->indexOfTopLevelItem(m_triggerList->currentItem())); });
+    connect(remove, &QPushButton::clicked, this, [this] {
+        const int index = m_triggerList->indexOfTopLevelItem(m_triggerList->currentItem());
+        if (index >= 0 && index < static_cast<int>(m_triggers.size())) {
+            m_triggers.erase(m_triggers.begin() + index);
+            reloadTriggers();
+        }
+    });
+    buttons->addWidget(add);
+    buttons->addWidget(edit);
+    buttons->addWidget(remove);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
+    reloadTriggers();
+    return page;
+}
+
+void SettingsDialog::reloadTriggers() {
+    const QSignalBlocker blocker(m_triggerList);
+    m_triggerList->clear();
+    for (const TriggerRule& rule : m_triggers) {
+        auto* item = new QTreeWidgetItem(m_triggerList, {QString::fromStdString(rule.name), QString::fromStdString(rule.pattern),
+                                                         TriggerEditDialog::actionName(rule.action)});
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, rule.enabled ? Qt::Checked : Qt::Unchecked);
+    }
+}
+
+void SettingsDialog::editTrigger(int index) {
+    const bool adding = index < 0 || index >= static_cast<int>(m_triggers.size());
+    TriggerEditDialog dialog(adding ? TriggerRule{} : m_triggers[static_cast<std::size_t>(index)], this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    if (adding) {
+        m_triggers.push_back(dialog.rule());
+    } else {
+        m_triggers[static_cast<std::size_t>(index)] = dialog.rule();
+    }
+    reloadTriggers();
+}
+
+void SettingsDialog::setTriggers(std::vector<TriggerRule> triggers) {
+    m_triggers = std::move(triggers);
+    reloadTriggers();
+}
+
 void SettingsDialog::loadKeymap(const Keymap& keymap) {
     const QSignalBlocker blocker(m_keys);
     int row = 0;
@@ -255,6 +373,17 @@ Settings SettingsDialog::settings() const {
     s.confirmCloseRunning = m_confirmClose->isChecked();
     s.keymap = editedKeymap(nullptr);
     s.knownHostsFile = m_knownHosts->text().trimmed().toStdString();
+    s.logging.autoStart = m_logAutoStart->isChecked();
+    s.logging.directory = m_logDirectory->text().trimmed().toStdString();
+    s.logging.fileName = m_logFileName->text().trimmed().toStdString();
+    if (s.logging.fileName.empty()) {
+        s.logging.fileName = LoggingSettings{}.fileName;
+    }
+    s.logging.format = static_cast<LogFormat>(m_logFormat->currentData().toInt());
+    s.logging.timestamps = m_logTimestamps->isChecked();
+    s.completion.enabled = m_completion->isChecked();
+    s.completion.minimumPrefix = m_completionPrefix->value();
+    s.triggers = m_triggers;
     return s;
 }
 

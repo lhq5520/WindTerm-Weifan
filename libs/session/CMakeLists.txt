@@ -1,14 +1,18 @@
 # wt_session: Qt-free application model (themes, key bindings, settings, session profiles,
-# reconnect policy) and its JSON persistence.
+# reconnect policy, session logs, command history) and its JSON persistence.
 
 add_library(wt_session STATIC
     include/wt/session/Backoff.h
+    include/wt/session/CommandHistory.h
     include/wt/session/Keymap.h
+    include/wt/session/SessionLog.h
     include/wt/session/SessionProfile.h
     include/wt/session/Settings.h
     include/wt/session/Theme.h
     src/Backoff.cpp
+    src/CommandHistory.cpp
     src/Keymap.cpp
+    src/SessionLog.cpp
     src/SessionProfile.cpp
     src/Settings.cpp
     src/Theme.cpp)

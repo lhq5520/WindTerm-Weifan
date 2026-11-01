@@ -12,6 +12,8 @@ TerminalSession::TerminalSession(QObject* parent) : QObject(parent), m_terminal(
     m_terminal.setClipboardHandler([this](char target, const std::string& text) {
         Q_EMIT clipboardWriteRequested(target, QString::fromStdString(text));
     });
+    connect(&m_triggers, &TriggerRunner::sendRequested, this,
+            [this](const QByteArray& bytes) { sendBytes(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size()))); });
 }
 
 TerminalSession::~TerminalSession() {
@@ -57,8 +59,38 @@ bool TerminalSession::start(std::unique_ptr<SessionBackend> backend, int rows, i
 }
 
 void TerminalSession::onData(const QByteArray& bytes) {
-    m_terminal.feed(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+    const std::string_view data(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+    m_terminal.feed(data);
+    m_log.write(data);
+    m_triggers.feed(data);
     Q_EMIT outputReceived();
+}
+
+void TerminalSession::sendInput(std::string_view bytes) {
+    if (!m_backend || m_finished || bytes.empty()) {
+        return;
+    }
+    sendBytes(bytes);
+    Q_EMIT inputSent(QByteArray(bytes.data(), static_cast<qsizetype>(bytes.size())));
+}
+
+bool TerminalSession::startLog(const QString& path, wt::session::LogFormat format, bool timestamps, QString* error) {
+    if (const auto status = m_log.open(path.toStdString(), format, timestamps); !status) {
+        if (error) {
+            *error = QString::fromStdString(status.message());
+        }
+        Q_EMIT loggingChanged(false);
+        return false;
+    }
+    Q_EMIT loggingChanged(true);
+    return true;
+}
+
+void TerminalSession::stopLog() {
+    if (m_log.isOpen()) {
+        m_log.close();
+        Q_EMIT loggingChanged(false);
+    }
 }
 
 void TerminalSession::onFinished(int exitCode) {
@@ -87,6 +119,7 @@ void TerminalSession::showNotice(const QString& text) {
     std::string bytes = m_terminal.cursor().column > 0 ? "\r\n" : "";
     bytes += "\x1b[0;2m" + text.toStdString() + "\x1b[0m\r\n";
     m_terminal.feed(bytes);
+    m_log.note(text.toStdString());
     Q_EMIT outputReceived();
 }
 

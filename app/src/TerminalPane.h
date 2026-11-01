@@ -40,14 +40,25 @@ public:
     void findNext();
     void findPrevious();
 
-    // Re-applies the application settings (theme, font, behaviour).
+    // Re-applies the application settings (theme, font, behaviour, triggers, completion).
     void applySettings();
+
+    // Session log to a new file in the configured log directory.
+    bool startLogging(QString* error = nullptr);
+    void stopLogging();
+    bool isLogging() const { return m_session->isLogging(); }
+    // Where commands typed here are remembered: the profile id, or "local".
+    QString historyContext() const;
+    // Host-ish name for log file names ("db.example.com", "ttyUSB0", "local").
+    QString hostName() const;
 
 Q_SIGNALS:
     void titleChanged();
     void activated(TerminalPane* pane);
     void sessionFinished(TerminalPane* pane, int exitCode);
     void bellRang(TerminalPane* pane);
+    // A notify trigger matched.
+    void triggerNotification(TerminalPane* pane, const QString& title, const QString& message);
 
 private:
     void wireSession();

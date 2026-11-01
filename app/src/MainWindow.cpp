@@ -19,15 +19,18 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDockWidget>
 #include <QGuiApplication>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QUrl>
 
 using wt::session::Action;
 
@@ -62,6 +65,7 @@ MainWindow::MainWindow(Options options, AppContext* context, QWidget* parent)
     m_tabs->tabBar()->setAutoHide(true);
     m_tabs->tabBar()->setElideMode(Qt::ElideRight);
     setCentralWidget(m_tabs);
+    statusBar(); // created up front so permanent indicators show at once
     setWindowTitle(QApplication::applicationDisplayName());
 
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
@@ -74,6 +78,7 @@ MainWindow::MainWindow(Options options, AppContext* context, QWidget* parent)
         }
         updateTitles();
         syncFileBrowser();
+        syncPaneActions();
     });
     connect(m_context, &AppContext::settingsChanged, this, &MainWindow::applySettings);
     connect(m_context, &AppContext::sessionsChanged, this, &MainWindow::rebuildSessionsMenu);
@@ -148,6 +153,15 @@ TerminalPane* MainWindow::createPane() {
     connect(pane, &TerminalPane::sessionFinished, this, &MainWindow::onPaneFinished);
     connect(pane, &TerminalPane::bellRang, this, &MainWindow::onBell);
     connect(pane, &TerminalPane::titleChanged, this, &MainWindow::updateTitles);
+    connect(pane, &TerminalPane::triggerNotification, this, &MainWindow::onTriggerNotification);
+    connect(pane, &TerminalPane::activated, this, &MainWindow::syncPaneActions);
+    connect(pane->session(), &TerminalSession::loggingChanged, this, &MainWindow::syncPaneActions);
+    QPointer<TerminalPane> guarded(pane);
+    connect(pane->session(), &TerminalSession::inputSent, this, [this, guarded](const QByteArray& bytes) {
+        if (guarded) {
+            broadcastFrom(guarded, bytes);
+        }
+    });
     connect(pane->terminal(), &TerminalWidget::contextMenuAboutToShow, this, [this](QMenu* menu) {
         menu->addSeparator();
         menu->addAction(action(Action::SplitRight));
@@ -186,7 +200,112 @@ bool MainWindow::startPaneLocal(TerminalPane* pane, const TerminalSession::Optio
         return false;
     }
     updateTitles();
+    onPaneStarted(pane);
     return true;
+}
+
+void MainWindow::onPaneStarted(TerminalPane* pane) {
+    if (m_context->settings().logging.autoStart && !pane->isLogging()) {
+        QString error;
+        if (!pane->startLogging(&error)) {
+            reportError(tr("Session log: %1").arg(error));
+        }
+    }
+    syncPaneActions();
+}
+
+QList<TerminalPane*> MainWindow::allPanes() const {
+    QList<TerminalPane*> panes;
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (TerminalTab* tab = tabAt(i)) {
+            panes += tab->panes();
+        }
+    }
+    return panes;
+}
+
+void MainWindow::setSessionLogging(bool enabled) {
+    TerminalPane* pane = activePane();
+    if (!pane) {
+        return;
+    }
+    if (!enabled) {
+        const QString path = pane->session()->logPath();
+        pane->stopLogging();
+        statusBar()->showMessage(tr("Session log saved to %1").arg(QDir::toNativeSeparators(path)), 8000);
+    } else if (!pane->isLogging()) {
+        QString error;
+        if (pane->startLogging(&error)) {
+            statusBar()->showMessage(
+                tr("Logging to %1").arg(QDir::toNativeSeparators(pane->session()->logPath())), 8000);
+        } else {
+            reportError(tr("Session log: %1").arg(error));
+        }
+    }
+    syncPaneActions();
+}
+
+void MainWindow::syncPaneActions() {
+    TerminalPane* pane = activePane();
+    QAction* log = action(Action::ToggleSessionLog);
+    const QSignalBlocker blocker(log);
+    log->setChecked(pane && pane->isLogging());
+    log->setEnabled(pane != nullptr);
+}
+
+void MainWindow::setBroadcast(Broadcast mode) {
+    m_broadcast = mode;
+    {
+        const QSignalBlocker tab(action(Action::BroadcastToTab));
+        const QSignalBlocker all(action(Action::BroadcastToAll));
+        action(Action::BroadcastToTab)->setChecked(mode == Broadcast::Tab);
+        action(Action::BroadcastToAll)->setChecked(mode == Broadcast::All);
+    }
+    if (!m_broadcastLabel) {
+        m_broadcastLabel = new QLabel(this);
+        m_broadcastLabel->setObjectName(QStringLiteral("broadcastIndicator"));
+        m_broadcastLabel->setStyleSheet(QStringLiteral("QLabel { color: #e5c07b; font-weight: bold; }"));
+        statusBar()->addPermanentWidget(m_broadcastLabel);
+    }
+    m_broadcastLabel->setText(mode == Broadcast::Tab   ? tr("Broadcasting to the tab")
+                              : mode == Broadcast::All ? tr("Broadcasting to all tabs")
+                                                       : QString());
+    m_broadcastLabel->setVisible(mode != Broadcast::Off);
+}
+
+void MainWindow::broadcastFrom(TerminalPane* source, const QByteArray& bytes) {
+    if (m_broadcast == Broadcast::Off) {
+        return;
+    }
+    QList<TerminalPane*> targets;
+    if (m_broadcast == Broadcast::All) {
+        targets = allPanes();
+    } else {
+        for (int i = 0; i < m_tabs->count(); ++i) {
+            if (TerminalTab* tab = tabAt(i); tab && tab->panes().contains(source)) {
+                targets = tab->panes();
+                break;
+            }
+        }
+    }
+    const std::string_view input(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+    for (TerminalPane* target : targets) {
+        if (target != source && target->session()->isRunning()) {
+            target->session()->sendBytes(input); // not sendInput(): no echo back into the broadcast
+        }
+    }
+}
+
+void MainWindow::onTriggerNotification(TerminalPane* pane, const QString& title, const QString& message) {
+    statusBar()->showMessage(title.isEmpty() ? message : QStringLiteral("%1: %2").arg(title, message), 10000);
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        if (TerminalTab* tab = tabAt(i); tab && tab->panes().contains(pane) && i != m_tabs->currentIndex()) {
+            m_tabs->tabBar()->setTabTextColor(i, QColor(0x61, 0xAF, 0xEF)); // trigger marker
+        }
+    }
+    if (!isActiveWindow()) {
+        QApplication::alert(this);
+    }
 }
 
 bool MainWindow::startPaneProfile(TerminalPane* pane, const wt::session::SessionProfile& profile) {
@@ -201,6 +320,7 @@ bool MainWindow::startPaneProfile(TerminalPane* pane, const wt::session::Session
             return false;
         }
         updateTitles();
+        onPaneStarted(pane);
         return true;
     }
     pane->startProfile(profile); // records the profile (title, theme)
@@ -220,6 +340,7 @@ bool MainWindow::startPaneProfile(TerminalPane* pane, const wt::session::Session
             return false;
         }
         updateTitles();
+        onPaneStarted(pane);
         return true;
     }
 #ifdef WT_HAVE_SSH
@@ -240,6 +361,7 @@ bool MainWindow::startPaneProfile(TerminalPane* pane, const wt::session::Session
         return false;
     }
     updateTitles();
+    onPaneStarted(pane);
     return true;
 #else
     m_errorString = tr("This build has no SSH support (libssh2 was not found)");
@@ -431,6 +553,9 @@ void MainWindow::createActions() {
     files->setCheckable(true);
     files->setEnabled(sshSupported());
     connect(files, &QAction::toggled, this, &MainWindow::setFileBrowserVisible);
+    for (const Action checkable : {Action::ToggleSessionLog, Action::BroadcastToTab, Action::BroadcastToAll}) {
+        action(checkable)->setCheckable(true);
+    }
 }
 
 void MainWindow::triggerAction(Action id) {
@@ -521,6 +646,13 @@ void MainWindow::triggerAction(Action id) {
     case Action::NewSerialSession: newSession(wt::session::SessionKind::Serial); break;
     case Action::SendBreak: sendBreak(); break;
     case Action::PortForwarding: showPortForwarding(); break;
+    case Action::ToggleSessionLog: setSessionLogging(action(id)->isChecked()); break;
+    case Action::BroadcastToTab:
+        setBroadcast(action(id)->isChecked() ? Broadcast::Tab : Broadcast::Off);
+        break;
+    case Action::BroadcastToAll:
+        setBroadcast(action(id)->isChecked() ? Broadcast::All : Broadcast::Off);
+        break;
     case Action::SessionManager: showSessionManager(); break;
     case Action::Settings: showSettings(); break;
     case Action::ToggleFileBrowser: break; // a checkable action: see setFileBrowserVisible()
@@ -578,6 +710,15 @@ void MainWindow::createMenus() {
     session->addAction(action(Action::SendBreak));
     session->addAction(action(Action::PortForwarding));
     session->addAction(action(Action::ToggleFileBrowser));
+    session->addSeparator();
+    session->addAction(action(Action::ToggleSessionLog));
+    session->addAction(tr("Open Logs Folder"), this, [this] {
+        const QString directory = m_context->logDirectory();
+        QDir().mkpath(directory);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    });
+    session->addAction(action(Action::BroadcastToTab));
+    session->addAction(action(Action::BroadcastToAll));
     session->addSeparator();
     m_sessionsMenu = session->addMenu(tr("&Open Saved Session"));
     rebuildSessionsMenu();

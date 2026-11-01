@@ -402,6 +402,32 @@ WT_TEST(reflow_maps_points_on_wide_padding_to_the_next_character) {
     WT_CHECK_EQ(t.selectedText(), std::string("中"));
 }
 
+WT_TEST(osc133_shell_integration_marks) {
+    Terminal t(5, 12);
+    WT_CHECK(!t.shellMarks().commandStart);
+    t.feed("\x1b]133;A\x07user@host:~$ \x1b]133;B" ST);
+    WT_REQUIRE(t.shellMarks().promptStart.has_value());
+    WT_REQUIRE(t.shellMarks().commandStart.has_value());
+    WT_CHECK_EQ(t.shellMarks().promptStart->column, 0);
+    WT_CHECK_EQ(t.shellMarks().commandStart->column, 1); // the prompt's last space wrapped onto a new line
+    WT_CHECK_EQ(t.shellMarks().commandStart->row, t.screenStart() + 1);
+    // The command wraps across lines; textFrom() follows the wrap.
+    t.feed("git log --oneline");
+    WT_CHECK_EQ(t.textFrom(*t.shellMarks().commandStart), std::string("git log --oneline"));
+    t.feed("\r\n\x1b]133;C\x07output\r\n\x1b]133;D;3\x07");
+    WT_CHECK(!t.shellMarks().commandRunning);
+    WT_CHECK(t.shellMarks().lastExitCode == std::optional<int>(3));
+    t.feed("\x1b]133;A\x07$ \x1b]133;B\x07");
+    WT_CHECK_EQ(t.shellMarks().commandStart->column, 2);
+    WT_CHECK_EQ(t.textFrom({t.screenStart() + 100, 0}), std::string()); // outside the screen
+    // Full-screen applications do not move the marks.
+    const auto before = *t.shellMarks().commandStart;
+    t.feed(CSI "?1049h" "\x1b]133;B\x07" CSI "?1049l");
+    WT_CHECK(*t.shellMarks().commandStart == before);
+    t.feed(ESC "c"); // RIS forgets them
+    WT_CHECK(!t.shellMarks().commandStart);
+}
+
 WT_TEST(kitty_f3_avoids_cursor_report_clash) {
     KeyboardModes kitty;
     kitty.kittyFlags = KittyDisambiguate;

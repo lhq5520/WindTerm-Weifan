@@ -7,20 +7,96 @@
 #endif
 
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <ctime>
+
 AppContext::AppContext(const QString& configDir, QObject* parent)
     : QObject(parent),
       m_configDir(configDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation)
                                       : configDir) {
+    m_historySave.setSingleShot(true);
+    m_historySave.setInterval(2000);
+    connect(&m_historySave, &QTimer::timeout, this, &AppContext::saveHistory);
     load();
 }
 
 AppContext::AppContext(EphemeralTag, QObject* parent) : QObject(parent), m_persistent(false) {}
+
+AppContext::~AppContext() {
+    if (m_historySave.isActive()) {
+        saveHistory();
+    }
+}
+
+QString AppContext::historyPath() const {
+    return QDir(m_configDir).filePath(QStringLiteral("history.json"));
+}
+
+void AppContext::recordCommand(const QString& context, const QString& command) {
+    if (m_history.add(context.toStdString(), command.toStdString()) && m_persistent) {
+        m_historySave.start();
+    }
+}
+
+QStringList AppContext::completeCommand(const QString& context, const QString& prefix, int limit) const {
+    QStringList list;
+    for (const auto& command :
+         m_history.complete(context.toStdString(), prefix.toStdString(), static_cast<std::size_t>(std::max(1, limit)))) {
+        list << QString::fromStdString(command);
+    }
+    return list;
+}
+
+bool AppContext::saveHistory() {
+    m_historySave.stop();
+    if (!m_persistent) {
+        return true;
+    }
+    if (const auto status = m_history.save(historyPath().toStdString()); !status) {
+        m_lastError = QString::fromStdString(status.message());
+        return false;
+    }
+    return true;
+}
+
+void AppContext::compileTriggers() {
+    m_triggerErrors.clear();
+    m_triggers = ::compileTriggers(m_settings.triggers, &m_triggerErrors);
+}
+
+QString AppContext::logDirectory() const {
+    if (!m_settings.logging.directory.empty()) {
+        return QString::fromStdString(m_settings.logging.directory);
+    }
+    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return QDir(documents.isEmpty() ? QDir::homePath() : documents).filePath(QStringLiteral("WindTerm-Weifan/Logs"));
+}
+
+QString AppContext::logPathFor(const QString& sessionName, const QString& host) const {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef Q_OS_WIN
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    const std::string name =
+        wt::session::expandLogFileName(m_settings.logging.fileName, sessionName.toStdString(), host.toStdString(), local);
+    QString path = QDir(logDirectory()).filePath(QString::fromStdString(name));
+    // Two sessions started in the same second with the same name: do not interleave their logs.
+    for (int n = 2; QFile::exists(path) && n < 1000; ++n) {
+        const QFileInfo info(QDir(logDirectory()).filePath(QString::fromStdString(name)));
+        path = info.dir().filePath(QStringLiteral("%1-%2.%3").arg(info.completeBaseName()).arg(n).arg(info.suffix()));
+    }
+    return path;
+}
 
 AppContext* AppContext::createEphemeral(QObject* parent) {
     return new AppContext(EphemeralTag{}, parent);
@@ -68,10 +144,16 @@ void AppContext::load() {
     if (const auto status = m_sessions.load(sessionsPath().toStdString()); !status) {
         m_warnings << QString::fromStdString(status.message());
     }
+    if (const auto status = m_history.load(historyPath().toStdString()); !status) {
+        m_warnings << QString::fromStdString(status.message());
+    }
+    compileTriggers();
+    m_warnings << m_triggerErrors;
 }
 
 bool AppContext::setSettings(const wt::session::Settings& settings) {
     m_settings = settings;
+    compileTriggers();
     bool ok = true;
     if (m_persistent) {
         const auto status =

@@ -1,7 +1,9 @@
 #pragma once
 
 #include "SessionBackend.h"
+#include "Triggers.h"
 
+#include "wt/session/SessionLog.h"
 #include "wt/terminal/Terminal.h"
 
 #include <QObject>
@@ -45,6 +47,19 @@ public:
 
     void sendBytes(std::string_view bytes);
     void sendText(const QString& text);
+    // Input typed or pasted by the user (as opposed to terminal replies): also announced through
+    // inputSent() for input broadcasting.
+    void sendInput(std::string_view bytes);
+
+    // Session log (see wt::session::SessionLogger).
+    bool startLog(const QString& path, wt::session::LogFormat format, bool timestamps, QString* error = nullptr);
+    void stopLog();
+    bool isLogging() const { return m_log.isOpen(); }
+    QString logPath() const { return QString::fromStdString(m_log.path()); }
+
+    // Notify / beep / send triggers (highlights are the view's business).
+    void setTriggers(std::vector<CompiledTrigger> triggers) { m_triggers.setRules(std::move(triggers)); }
+    TriggerRunner* triggers() { return &m_triggers; }
     // Resizes the terminal model and the backend (SIGWINCH / window-change request). Cell pixel
     // sizes are reported through the PTY window size and XTWINOPS; 0 means unknown.
     void resize(int rows, int columns, int cellPixelWidth = 0, int cellPixelHeight = 0);
@@ -66,12 +81,16 @@ Q_SIGNALS:
     void finished(int exitCode);
     // OSC 52 request (only emitted when clipboard writes are allowed).
     void clipboardWriteRequested(char target, const QString& text);
+    void inputSent(const QByteArray& bytes);
+    void loggingChanged(bool logging);
 
 private:
     void onData(const QByteArray& bytes);
     void onFinished(int exitCode);
 
     wt::terminal::Terminal m_terminal;
+    wt::session::SessionLogger m_log;
+    TriggerRunner m_triggers;
     SessionBackend* m_backend = nullptr; // owned (child object)
     QString m_errorString;
     std::optional<int> m_exitCode;

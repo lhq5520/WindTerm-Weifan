@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Triggers.h"
+
+#include "wt/session/CommandHistory.h"
 #include "wt/session/Settings.h"
 #include "wt/session/Theme.h"
 #include "wt/terminal/Cell.h"
@@ -15,9 +18,11 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
+class QListWidget;
 class QMenu;
 class TerminalSession;
 namespace wt::terminal {
@@ -90,6 +95,28 @@ public:
     // Scrolls so that an absolute row is visible (roughly centred).
     void scrollToRow(std::int64_t absoluteRow);
 
+    // Highlight triggers (rules with TriggerAction::Highlight) applied when painting.
+    void setHighlightRules(std::vector<CompiledTrigger> rules);
+    // Matches of the highlight rules on an absolute row: (first column, last column, rule index).
+    struct RuleMatch {
+        int startColumn;
+        int endColumn;
+        int rule;
+    };
+    std::vector<RuleMatch> highlightMatches(std::int64_t absoluteRow) const;
+
+    // Command completion: `provider(prefix)` returns history entries starting with what is typed
+    // at the prompt; an empty provider turns completion off. Suggestions show after
+    // `minimumPrefix` characters; Up/Down choose one, Right/Enter/Tab insert it, Esc closes.
+    using CompletionProvider = std::function<QStringList(const QString& prefix)>;
+    void setCompletionProvider(CompletionProvider provider, int minimumPrefix = 2);
+    bool completionVisible() const;
+    QStringList completionItems() const;
+    // Inserts the rest of suggestion `row` as if it was typed.
+    void acceptCompletion(int row);
+    // What the user is typing at the prompt, as far as the keystrokes tell.
+    QString typedLine() const { return QString::fromStdString(m_inputLine.line()); }
+
     QSize sizeHint() const override;
     QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
 
@@ -99,6 +126,9 @@ Q_SIGNALS:
     void focusReceived();
     // Lets the host add entries (split, find, ...) to the context menu before it is shown.
     void contextMenuAboutToShow(QMenu* menu);
+    // A command line the user ran at a shell prompt (for the completion history). Only lines that
+    // were echoed on the screen are reported, so passwords typed at silent prompts never are.
+    void commandSubmitted(const QString& command);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -124,11 +154,12 @@ private:
         int endColumn = 0; // inclusive
         QString url;
     };
-    enum class Highlight : std::uint8_t { None, Match, CurrentMatch, Selection };
+    enum class Highlight : std::uint8_t { None, Rule, Match, CurrentMatch, Selection };
     struct RowHighlight {
         int startColumn;
         int endColumn; // inclusive
         Highlight kind;
+        int rule = -1; // Highlight::Rule: index into m_highlightRules
     };
 
     void onOutput();
@@ -149,6 +180,11 @@ private:
                          const QColor& foreground) const;
     void drawCursor(QPainter& painter) const;
     std::vector<RowHighlight> searchHighlightsForRow(std::int64_t absoluteRow) const;
+
+    // User input (keys, IME, paste): command tracking, completion, then the session.
+    void sendUserInput(std::string_view bytes);
+    void updateCompletion();
+    void hideCompletion();
 
     // Links
     std::optional<HoverLink> findLink(std::int64_t row, int column) const;
@@ -197,6 +233,14 @@ private:
     // Search highlighting
     std::vector<wt::terminal::SearchMatch> m_searchMatches;
     int m_currentMatch = -1;
+    std::vector<CompiledTrigger> m_highlightRules;
+
+    // Command line tracking and completion
+    wt::session::InputLineTracker m_inputLine;
+    std::optional<wt::terminal::GridPoint> m_promptEnd; // where typing started on the current line
+    CompletionProvider m_completionProvider;
+    int m_completionMinimum = 2;
+    QListWidget* m_completion = nullptr;
 
     // Painting state
     int m_lastCursorRow = 0;

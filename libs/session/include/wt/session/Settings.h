@@ -2,6 +2,7 @@
 
 #include "wt/core/Json.h"
 #include "wt/session/Keymap.h"
+#include "wt/session/SessionLog.h"
 #include "wt/session/Theme.h"
 
 #include <string>
@@ -27,6 +28,43 @@ struct TerminalSettings {
     friend bool operator==(const TerminalSettings&, const TerminalSettings&) = default;
 };
 
+enum class TriggerAction { Highlight, Notify, Beep, Send };
+
+// A rule applied to every line of terminal output (and to the line being written, so prompts
+// can trigger it): highlight the matches, notify, beep, or send text back (auto-answer).
+struct TriggerRule {
+    std::string name;
+    std::string pattern; // regular expression (PCRE syntax)
+    bool caseSensitive = false;
+    bool enabled = true;
+    TriggerAction action = TriggerAction::Highlight;
+    std::string foreground; // Highlight: "#rrggbb", empty = unchanged
+    std::string background; // Highlight: "#rrggbb", empty = unchanged
+    std::string text;       // Send: text with \r \n \t \e \\ escapes; Notify: message (empty: the line)
+
+    friend bool operator==(const TriggerRule&, const TriggerRule&) = default;
+};
+
+// "\\r" -> CR, "\\n" -> LF, "\\t" -> tab, "\\e" -> ESC, "\\\\" -> backslash.
+std::string unescapeTriggerText(std::string_view text);
+
+struct LoggingSettings {
+    bool autoStart = false;   // log every session from its start
+    std::string directory;    // empty: <Documents>/WindTerm-Weifan/Logs
+    std::string fileName = "%Y-%m-%d_%H-%M-%S_%N.log"; // see expandLogFileName()
+    LogFormat format = LogFormat::Text;
+    bool timestamps = true; // text logs: prefix every line with the time
+
+    friend bool operator==(const LoggingSettings&, const LoggingSettings&) = default;
+};
+
+struct CompletionSettings {
+    bool enabled = true;   // suggest commands from the history while typing at a prompt
+    int minimumPrefix = 2; // characters typed before suggestions appear
+
+    friend bool operator==(const CompletionSettings&, const CompletionSettings&) = default;
+};
+
 // Application settings persisted as settings.json.
 struct Settings {
     static constexpr int kVersion = 1;
@@ -38,6 +76,9 @@ struct Settings {
     std::vector<Theme> customThemes;
     bool confirmCloseRunning = true;
     std::string knownHostsFile; // empty: ~/.ssh/known_hosts
+    LoggingSettings logging;
+    std::vector<TriggerRule> triggers;
+    CompletionSettings completion;
 
     core::Json toJson() const;
     // Unknown keys are ignored and out-of-range values clamped; `warnings` lists what was fixed.

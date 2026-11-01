@@ -119,6 +119,19 @@ public:
     // Last directory reported through OSC 7 (file://host/path), percent-decoded; empty if none.
     const std::string& workingDirectory() const { return m_workingDirectory; }
 
+    // Shell integration marks (OSC 133 A/B/C/D, as emitted by iTerm2/VS Code/WezTerm shell
+    // integration scripts), in absolute coordinates.
+    struct ShellMarks {
+        std::optional<GridPoint> promptStart;  // A
+        std::optional<GridPoint> commandStart; // B: where the user's input begins
+        bool commandRunning = false;           // between C and D
+        std::optional<int> lastExitCode;       // D;<code>
+    };
+    const ShellMarks& shellMarks() const { return m_shellMarks; }
+    // Text from `start` to the end of its logical line (following autowrap), trailing blanks
+    // trimmed: what the user typed after a prompt.
+    std::string textFrom(GridPoint start) const;
+
     // Colours (OSC 4/10/11/12 may change them at runtime; RIS and OSC 104/110-112 restore the
     // defaults set here).
     const ColorPalette& palette() const { return m_palette; }
@@ -252,6 +265,7 @@ private:
     std::string m_title;
     std::vector<std::string> m_titleStack; // XTWINOPS 22/23
     std::string m_workingDirectory;
+    ShellMarks m_shellMarks;
     std::uint64_t m_revision = 0;
 
     CursorShape m_defaultCursorShape = CursorShape::Block;

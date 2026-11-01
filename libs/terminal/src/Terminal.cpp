@@ -212,6 +212,7 @@ void Terminal::feed(std::string_view bytes) {
 
 void Terminal::reset() {
     clearSelection();
+    m_shellMarks = {};
     m_attributes = {};
     m_primary.assign(static_cast<std::size_t>(m_rows), blankLine());
     m_alternate.assign(static_cast<std::size_t>(m_rows), blankLine());
@@ -572,6 +573,29 @@ std::string Terminal::lineToText(const Line& line) const {
 
 std::string Terminal::lineText(int row) const {
     return lineToText(line(row));
+}
+
+std::string Terminal::textFrom(GridPoint start) const {
+    std::string text;
+    std::int64_t row = start.row;
+    std::size_t column = static_cast<std::size_t>(std::max(0, start.column));
+    while (const Line* current = absoluteLine(row)) {
+        for (std::size_t i = column; i < current->cells.size(); ++i) {
+            const Cell& cell = current->cells[i];
+            if (cell.width != 0 && !cell.attributes.has(WidePadding)) {
+                for (char32_t cp : cellText(cell)) {
+                    core::appendUtf8(text, cp);
+                }
+            }
+        }
+        if (!current->wrapped) {
+            break;
+        }
+        ++row;
+        column = 0;
+    }
+    text.erase(text.find_last_not_of(' ') + 1);
+    return text;
 }
 
 std::string Terminal::screenText() const {
@@ -1339,6 +1363,32 @@ void Terminal::oscDispatch(std::string_view payload, bool bellTerminated) {
             if (slash != std::string_view::npos) {
                 m_workingDirectory = percentDecode(value.substr(slash));
             }
+        }
+        break;
+    }
+    case 133: { // FinalTerm shell integration: A prompt, B command start, C executing, D done
+        if (value.empty() || m_screen == &m_alternate) {
+            break;
+        }
+        const GridPoint here{screenStart() + m_cursor.row, m_cursor.column};
+        switch (value.front()) {
+        case 'A':
+            m_shellMarks.promptStart = here;
+            m_shellMarks.commandStart.reset();
+            break;
+        case 'B': m_shellMarks.commandStart = here; break;
+        case 'C': m_shellMarks.commandRunning = true; break;
+        case 'D': {
+            m_shellMarks.commandRunning = false;
+            const auto exitSeparator = value.find(';');
+            if (exitSeparator != std::string_view::npos) {
+                if (const auto code = parseNumber(value.substr(exitSeparator + 1))) {
+                    m_shellMarks.lastExitCode = static_cast<int>(*code);
+                }
+            }
+            break;
+        }
+        default: break;
         }
         break;
     }

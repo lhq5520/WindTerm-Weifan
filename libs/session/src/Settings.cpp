@@ -16,6 +16,11 @@ constexpr EnumName<CursorStyle> kCursorStyles[] = {
     {CursorStyle::Block, "block"}, {CursorStyle::Underline, "underline"}, {CursorStyle::Bar, "bar"}};
 constexpr EnumName<BellStyle> kBellStyles[] = {
     {BellStyle::None, "none"}, {BellStyle::Visual, "visual"}, {BellStyle::Audible, "audible"}};
+constexpr EnumName<LogFormat> kLogFormats[] = {{LogFormat::Text, "text"}, {LogFormat::Raw, "raw"}};
+constexpr EnumName<TriggerAction> kTriggerActions[] = {{TriggerAction::Highlight, "highlight"},
+                                                       {TriggerAction::Notify, "notify"},
+                                                       {TriggerAction::Beep, "beep"},
+                                                       {TriggerAction::Send, "send"}};
 
 template <typename Enum, std::size_t N>
 const char* enumToString(const EnumName<Enum> (&table)[N], Enum value) {
@@ -69,7 +74,52 @@ core::Json Settings::toJson() const {
     json["customThemes"] = std::move(themes);
     json["confirmCloseRunning"] = confirmCloseRunning;
     json["knownHostsFile"] = knownHostsFile;
+    core::Json& l = json["logging"];
+    l["autoStart"] = logging.autoStart;
+    l["directory"] = logging.directory;
+    l["fileName"] = logging.fileName;
+    l["format"] = enumToString(kLogFormats, logging.format);
+    l["timestamps"] = logging.timestamps;
+    core::Json rules = core::Json::array();
+    for (const TriggerRule& rule : triggers) {
+        core::Json r;
+        r["name"] = rule.name;
+        r["pattern"] = rule.pattern;
+        r["caseSensitive"] = rule.caseSensitive;
+        r["enabled"] = rule.enabled;
+        r["action"] = enumToString(kTriggerActions, rule.action);
+        r["foreground"] = rule.foreground;
+        r["background"] = rule.background;
+        r["text"] = rule.text;
+        rules.push(std::move(r));
+    }
+    json["triggers"] = std::move(rules);
+    core::Json& c = json["completion"];
+    c["enabled"] = completion.enabled;
+    c["minimumPrefix"] = completion.minimumPrefix;
     return json;
+}
+
+std::string unescapeTriggerText(std::string_view text) {
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] != '\\' || i + 1 >= text.size()) {
+            out += text[i];
+            continue;
+        }
+        switch (text[++i]) {
+        case 'r': out += '\r'; break;
+        case 'n': out += '\n'; break;
+        case 't': out += '\t'; break;
+        case 'e': out += '\x1b'; break;
+        case '\\': out += '\\'; break;
+        default:
+            out += '\\';
+            out += text[i];
+            break;
+        }
+    }
+    return out;
 }
 
 Settings Settings::fromJson(const core::Json& json, std::vector<std::string>* warnings) {
@@ -106,6 +156,44 @@ Settings Settings::fromJson(const core::Json& json, std::vector<std::string>* wa
     }
     s.confirmCloseRunning = json["confirmCloseRunning"].toBool(true);
     s.knownHostsFile = json["knownHostsFile"].toString();
+    const core::Json& l = json["logging"];
+    s.logging.autoStart = l["autoStart"].toBool(false);
+    s.logging.directory = l["directory"].toString();
+    s.logging.fileName = l["fileName"].toString(LoggingSettings{}.fileName);
+    if (s.logging.fileName.empty()) {
+        s.logging.fileName = LoggingSettings{}.fileName;
+    }
+    s.logging.format = enumFromJson(kLogFormats, l["format"], LogFormat::Text, "logging.format", warnings);
+    s.logging.timestamps = l["timestamps"].toBool(true);
+    for (const core::Json& r : json["triggers"].items()) {
+        TriggerRule rule;
+        rule.name = r["name"].toString();
+        rule.pattern = r["pattern"].toString();
+        if (rule.pattern.empty()) {
+            if (warnings) {
+                warnings->push_back("trigger \"" + rule.name + "\" has no pattern");
+            }
+            continue;
+        }
+        rule.caseSensitive = r["caseSensitive"].toBool(false);
+        rule.enabled = r["enabled"].toBool(true);
+        rule.action = enumFromJson(kTriggerActions, r["action"], TriggerAction::Highlight, "trigger action", warnings);
+        rule.foreground = r["foreground"].toString();
+        rule.background = r["background"].toString();
+        for (std::string* color : {&rule.foreground, &rule.background}) {
+            if (!color->empty() && !parseHexColor(*color)) {
+                if (warnings) {
+                    warnings->push_back("trigger \"" + rule.name + "\": invalid colour " + *color);
+                }
+                color->clear();
+            }
+        }
+        rule.text = r["text"].toString();
+        s.triggers.push_back(std::move(rule));
+    }
+    const core::Json& c = json["completion"];
+    s.completion.enabled = c["enabled"].toBool(true);
+    s.completion.minimumPrefix = static_cast<int>(std::clamp<std::int64_t>(c["minimumPrefix"].toInt(2), 1, 20));
     if (!findTheme(s.terminal.theme, s.customThemes)) {
         if (warnings) {
             warnings->push_back("unknown theme \"" + s.terminal.theme + "\"");

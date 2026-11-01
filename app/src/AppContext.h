@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Triggers.h"
+
+#include "wt/session/CommandHistory.h"
 #include "wt/session/SessionProfile.h"
 #include "wt/session/Settings.h"
 
@@ -7,6 +10,7 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 
 #include <functional>
 #include <memory>
@@ -45,6 +49,22 @@ public:
     const wt::session::SessionStore& sessions() const { return m_sessions; }
     bool saveSessions();
 
+    // ---- Command history for completion (history.json; saved shortly after changes)
+    QString historyPath() const;
+    void recordCommand(const QString& context, const QString& command);
+    QStringList completeCommand(const QString& context, const QString& prefix, int limit = 8) const;
+    wt::session::CommandHistory& history() { return m_history; }
+    bool saveHistory();
+
+    // ---- Triggers from the settings, compiled (invalid patterns are listed in triggerErrors()).
+    const std::vector<CompiledTrigger>& triggers() const { return m_triggers; }
+    QStringList triggerErrors() const { return m_triggerErrors; }
+
+    // ---- Session logs: the settings' directory, or <Documents>/WindTerm-Weifan/Logs.
+    QString logDirectory() const;
+    // A new log file path for a session, following the settings' file name pattern.
+    QString logPathFor(const QString& sessionName, const QString& host) const;
+
     // ---- Credential vault (encrypted with the master password; see wt::security::CredentialVault)
     // Asks for the master password: `creating` is true when a new vault will be created (the
     // provider should ask twice). nullopt = cancelled. The default shows a dialog.
@@ -75,10 +95,19 @@ Q_SIGNALS:
     void settingsChanged();
     void sessionsChanged();
 
+public:
+    ~AppContext() override;
+
 private:
     struct EphemeralTag {};
     AppContext(EphemeralTag, QObject* parent);
     void load();
+    void compileTriggers();
+
+    wt::session::CommandHistory m_history;
+    QTimer m_historySave;
+    std::vector<CompiledTrigger> m_triggers;
+    QStringList m_triggerErrors;
 
     std::shared_ptr<wt::security::CredentialVault> m_vault;
     MasterPasswordProvider m_masterPassword;

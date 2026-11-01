@@ -40,6 +40,9 @@ enum class Action {
     NewSerialSession,
     SendBreak,
     PortForwarding,
+    ToggleSessionLog,
+    BroadcastToTab,
+    BroadcastToAll,
     Count_ // number of actions; not an action
 };
 

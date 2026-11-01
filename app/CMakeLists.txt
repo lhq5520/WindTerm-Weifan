@@ -30,7 +30,11 @@ add_library(wt_app STATIC
     src/TerminalTab.cpp
     src/TerminalTab.h
     src/TerminalWidget.cpp
-    src/TerminalWidget.h)
+    src/TerminalWidget.h
+    src/TriggerEditDialog.cpp
+    src/TriggerEditDialog.h
+    src/Triggers.cpp
+    src/Triggers.h)
 if(WT_HAVE_SSH)
     target_sources(wt_app PRIVATE
         src/ssh/ForwardingDialog.cpp

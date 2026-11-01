@@ -35,6 +35,9 @@ const std::vector<ActionInfo>& allActions() {
         {Action::NewSerialSession, "new-serial-session", "New Serial Session..."},
         {Action::SendBreak, "send-break", "Send Break"},
         {Action::PortForwarding, "port-forwarding", "Port Forwarding..."},
+        {Action::ToggleSessionLog, "toggle-session-log", "Log Session to File"},
+        {Action::BroadcastToTab, "broadcast-tab", "Broadcast Input to All Panes of the Tab"},
+        {Action::BroadcastToAll, "broadcast-all", "Broadcast Input to All Tabs"},
     };
     return actions;
 }

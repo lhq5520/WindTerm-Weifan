@@ -69,7 +69,8 @@ WT_TEST(themes_builtin_lookup_and_json_round_trip) {
 WT_TEST(keymap_defaults_have_no_conflicts) {
     // Rarely used commands are reachable from the menus only (users can bind them).
     const std::vector<Action> menuOnly = {Action::NewTelnetSession, Action::NewSerialSession, Action::SendBreak,
-                                          Action::PortForwarding};
+                                          Action::PortForwarding,   Action::ToggleSessionLog, Action::BroadcastToTab,
+                                          Action::BroadcastToAll};
     for (auto flavor : {KeymapFlavor::Standard, KeymapFlavor::Mac}) {
         const Keymap map = Keymap::defaults(flavor);
         WT_CHECK(map.conflicts().empty());

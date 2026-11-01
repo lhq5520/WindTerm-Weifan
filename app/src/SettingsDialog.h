@@ -12,6 +12,7 @@ class QLabel;
 class QLineEdit;
 class QSpinBox;
 class QTableWidget;
+class QTreeWidget;
 
 // Edits the application settings: appearance, terminal behaviour, key bindings and SSH options.
 class SettingsDialog : public QDialog {
@@ -26,12 +27,17 @@ public:
     QStringList keymapProblems() const;
 
     void accept() override;
+    // Replaces the edited trigger list (tests, imports).
+    void setTriggers(std::vector<wt::session::TriggerRule> triggers);
 
 private:
     QWidget* createAppearancePage();
     QWidget* createTerminalPage();
     QWidget* createKeyboardPage();
     QWidget* createSshPage();
+    QWidget* createLoggingPage();
+    void reloadTriggers();
+    void editTrigger(int index); // -1: add
     void loadKeymap(const wt::session::Keymap& keymap);
     wt::session::Keymap editedKeymap(QStringList* problems) const;
     void updateKeymapStatus();
@@ -52,4 +58,13 @@ private:
     QTableWidget* m_keys = nullptr;
     QLabel* m_keyStatus = nullptr;
     QLineEdit* m_knownHosts = nullptr;
+    QCheckBox* m_logAutoStart = nullptr;
+    QLineEdit* m_logDirectory = nullptr;
+    QLineEdit* m_logFileName = nullptr;
+    QComboBox* m_logFormat = nullptr;
+    QCheckBox* m_logTimestamps = nullptr;
+    QCheckBox* m_completion = nullptr;
+    QSpinBox* m_completionPrefix = nullptr;
+    std::vector<wt::session::TriggerRule> m_triggers;
+    QTreeWidget* m_triggerList = nullptr;
 };
